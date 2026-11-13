@@ -1,4 +1,7 @@
 import json
+import os
+from pathlib import Path
+
 import requests
 import streamlit as st
 import pandas as pd
@@ -8,7 +11,17 @@ import plotly.graph_objects as go
 # CONFIG
 # ============================================================
 
-BACKEND_URL = "http://127.0.0.1:5000"
+try:
+    from dotenv import load_dotenv
+
+    # Same .env file as the backend (project root); real env vars win.
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+except ImportError:
+    pass
+
+# Flask backend address. Must match the backend's HOST/PORT
+# (default backend: http://127.0.0.1:5000).
+BACKEND_URL = os.getenv("DEEPSHIELD_BACKEND_URL", "http://127.0.0.1:5000").rstrip("/")
 PREDICT_URL = f"{BACKEND_URL}/predict"
 HEALTH_URL = f"{BACKEND_URL}/health"
 
@@ -154,6 +167,15 @@ with st.sidebar:
                 f"**Model Loaded:** `{health.get('model_loaded', False)}`"
             )
 
+            if health.get("model_path"):
+                st.caption(f"Checkpoint: `{health['model_path']}`")
+
+            if not health.get("model_loaded", False):
+                st.warning(
+                    "No trained weights loaded - predictions are disabled. "
+                    f"{health.get('model_error') or ''}"
+                )
+
             st.write(
                 f"**Upload Limit:** "
                 f"`{health.get('max_upload_mb', 100)} MB`"
@@ -164,6 +186,7 @@ with st.sidebar:
 
     except requests.exceptions.RequestException:
         st.error("🔴 Backend Offline")
+        st.caption(f"Expected at `{BACKEND_URL}`")
 
     st.divider()
 
@@ -248,7 +271,7 @@ with tab1:
             st.image(
                 uploaded_file,
                 caption="Uploaded Image",
-                use_container_width=True,
+                width="stretch",
             )
 
         elif file_type.startswith("video/"):
@@ -274,7 +297,7 @@ with tab1:
         analyze = st.button(
             "Analyze Media",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
         if analyze:
@@ -363,6 +386,13 @@ with tab1:
                                         raw_data
                                     )
 
+                                    if "error" in data:
+                                        st.error(
+                                            f"Backend error: {data['error']}"
+                                        )
+                                        latest_data = None
+                                        break
+
                                     latest_data = data
 
                                     total = data.get(
@@ -443,7 +473,7 @@ with tab1:
 
                     st.info(
                         "Make sure the backend is running on "
-                        "`http://127.0.0.1:5000`."
+                        f"`{BACKEND_URL}`."
                     )
 
                 except Exception as e:
@@ -621,7 +651,7 @@ with tab1:
 
             st.plotly_chart(
                 fig,
-                use_container_width=True,
+                width="stretch",
             )
 
         with chart_col2:
@@ -665,9 +695,9 @@ with tab1:
                     "Confidence",
                 ],
                 "Value": [
-                    total_frames,
-                    real_count,
-                    fake_count,
+                    str(total_frames),
+                    str(real_count),
+                    str(fake_count),
                     f"{real_percentage:.2f}%",
                     f"{fake_percentage:.2f}%",
                     final_label,
@@ -678,7 +708,7 @@ with tab1:
 
         st.dataframe(
             result_table,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 

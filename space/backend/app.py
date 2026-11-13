@@ -5,6 +5,8 @@ import shutil
 import tempfile
 import urllib.request
 
+from dotenv import load_dotenv
+
 import cv2
 import numpy as np
 import torch
@@ -12,8 +14,16 @@ import timm
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 
-app = Flask(__name__)
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
 
+# Configuration is read from environment variables; a `.env` file at the
+# project root (see .env.example) is loaded if present. Real environment
+# variables take precedence over values in .env.
+DOTENV_PATH = os.path.join(PROJECT_ROOT, ".env")
+load_dotenv(DOTENV_PATH, override=False)
+
+app = Flask(__name__)
 
 def get_env_int(name, default):
     value = os.getenv(name)
@@ -53,7 +63,8 @@ else:
 max_upload_mb = max(1, get_env_int("MAX_CONTENT_LENGTH_MB", 100))
 app.config['MAX_CONTENT_LENGTH'] = max_upload_mb * 1024 * 1024
 
-HOST = os.getenv("HOST", "0.0.0.0")
+# Local default is loopback only; Docker/HF images set HOST=0.0.0.0 explicitly.
+HOST = os.getenv("HOST", "127.0.0.1")
 PORT = get_env_int("PORT", 5000)
 
 # Set up device (GPU if available)
@@ -73,8 +84,31 @@ def remove_module_prefix(state_dict):
     return new_state_dict
 
 
-MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
-MODEL_PATH = os.path.join(MODEL_DIR, "best_vit_model.pth")
+# Deployed checkpoint: ViT-B/16 frame classifier (state_dict, optionally with the
+# "module." prefix written by nn.DataParallel). Default: backend/models/best_vit_model.pth
+MODEL_ARCH = "vit_base_patch16_224"
+MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(BACKEND_DIR, "models"))
+MODEL_PATH = os.path.abspath(os.getenv("MODEL_PATH", os.path.join(MODEL_DIR, "best_vit_model.pth")))
+MODEL_DIR = os.path.dirname(MODEL_PATH)
+
+
+def parse_class_names(raw):
+    names = [name.strip().lower() for name in raw.split(",") if name.strip()]
+    if len(names) != 2 or "real" not in names:
+        raise ValueError(
+            f"CLASS_NAMES must list exactly two classes including 'real' "
+            f"(e.g. 'fake,real'), got {raw!r}"
+        )
+    return names
+
+
+# Output index -> class. The shipped checkpoint was trained with
+# torchvision.datasets.ImageFolder on folders ['manipulated', 'real']
+# (alphabetical), i.e. index 0 = fake/manipulated, index 1 = real
+# (see notebooks/DD_ViT_Final.ipynb). Override only for a checkpoint
+# trained with a different class order.
+CLASS_NAMES = parse_class_names(os.getenv("CLASS_NAMES", "fake,real"))
+REAL_INDEX = CLASS_NAMES.index("real")
 MODEL_URL = os.getenv("MODEL_URL", "").strip()
 MODEL_SHA256 = os.getenv("MODEL_SHA256", "").strip()
 
@@ -95,7 +129,7 @@ def ensure_model_file():
 
     if not MODEL_URL:
         print(f"WARNING: Model file not found at {MODEL_PATH}")
-        print("Set MODEL_URL or place your trained model at: backend/models/best_vit_model.pth")
+        print("Place the trained checkpoint there, or set MODEL_PATH / MODEL_URL.")
         return False
 
     print(f"Downloading model from {MODEL_URL} ...")
@@ -118,12 +152,27 @@ def ensure_model_file():
     return True
 
 
+MODEL_LOADED = False
+MODEL_LOAD_ERROR = None
+
 if ensure_model_file():
-    state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=True)
-    state_dict = remove_module_prefix(state_dict)
-    model.load_state_dict(state_dict)
-    print(f"Model loaded from {MODEL_PATH}")
-    
+    try:
+        state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+        if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+            state_dict = state_dict["model_state_dict"]
+        state_dict = remove_module_prefix(state_dict)
+        model.load_state_dict(state_dict, strict=True)
+        MODEL_LOADED = True
+        print(f"Model loaded from {MODEL_PATH}")
+    except Exception as exc:  # wrong architecture, corrupt file, ...
+        MODEL_LOAD_ERROR = f"{type(exc).__name__}: {exc}"
+        print(f"ERROR: Could not load checkpoint {MODEL_PATH}: {MODEL_LOAD_ERROR}")
+else:
+    MODEL_LOAD_ERROR = f"Checkpoint not found at {MODEL_PATH}"
+
+if not MODEL_LOADED:
+    print("WARNING: No trained weights loaded - /predict will return HTTP 503.")
+print(f"Class mapping (output index -> label): {dict(enumerate(CLASS_NAMES))}")
 
 model.eval()
 
@@ -158,6 +207,9 @@ def is_image_upload(filename, mimetype):
 
 @app.route("/predict", methods=["POST"])
 def predict():
+    if not MODEL_LOADED:
+        return jsonify({"error": "Model weights are not loaded", "detail": MODEL_LOAD_ERROR}), 503
+
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
 
@@ -166,7 +218,8 @@ def predict():
     is_image = is_image_upload(filename, video_file.mimetype)
     suffix = os.path.splitext(filename)[1].lower() if filename else (".png" if is_image else ".mp4")
 
-    # Save video to a temporary file
+    # Uploads are written to a temporary file (system temp dir) only for the
+    # duration of the request and deleted afterwards; nothing is persisted.
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp:
         video_file.save(temp.name)
         video_path = temp.name
@@ -187,8 +240,8 @@ def predict():
                 output = model(input_tensor)
                 _, predicted = torch.max(output, 1)
 
-            real_count = 1 if predicted.item() == 0 else 0
-            fake_count = 1 if predicted.item() == 1 else 0
+            real_count = 1 if predicted.item() == REAL_INDEX else 0
+            fake_count = 1 - real_count
             total_frames = 1
 
             data = {
@@ -219,6 +272,10 @@ def predict():
         skip = max(1, int(fps / 2))
 
         try:
+            if not cap.isOpened():
+                yield f"data: {json.dumps({'error': 'Unable to read video'})}\n\n"
+                return
+
             frame_idx = 0
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -235,8 +292,8 @@ def predict():
                 with torch.no_grad():
                     output = model(input_tensor)
                     _, predicted = torch.max(output, 1)
-                    # Label mapping: 0 = Real, 1 = Manipulated/Fake
-                    if predicted.item() == 0:
+                    # Label mapping comes from CLASS_NAMES (default: 0 = fake, 1 = real)
+                    if predicted.item() == REAL_INDEX:
                         real_count += 1
                     else:
                         fake_count += 1
@@ -249,6 +306,9 @@ def predict():
                     "fake_percentage": (fake_count / total_frames) * 100,
                 }
                 yield f"data: {json.dumps(data)}\n\n"
+
+            if total_frames == 0:
+                yield f"data: {json.dumps({'error': 'No frames could be decoded from the video'})}\n\n"
         finally:
             cap.release()
             # Always clean up temp file
@@ -265,11 +325,16 @@ def health():
     return jsonify({
         "status": "ok",
         "device": str(device),
-        "model_loaded": os.path.exists(MODEL_PATH),
+        "model_loaded": MODEL_LOADED,
+        "model_error": MODEL_LOAD_ERROR,
+        "model_arch": MODEL_ARCH,
+        "model_path": MODEL_PATH,
+        "class_names": CLASS_NAMES,
         "max_upload_mb": max_upload_mb,
         "model_url_set": bool(MODEL_URL),
     })
 
 
 if __name__ == "__main__":
+    print(f"Starting DeepShield backend on http://{HOST}:{PORT}  (health: /health, inference: POST /predict)")
     app.run(host=HOST, port=PORT, debug=False)

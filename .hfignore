@@ -60,3 +60,6 @@ notebooks/
 
 # Dataset
 /data/
+
+# Generated training/evaluation outputs
+/results/

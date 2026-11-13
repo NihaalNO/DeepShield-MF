@@ -54,3 +54,6 @@ backend/models/*.onnx
 
 # Dataset
 /data/
+
+# Generated training/evaluation outputs (checkpoints, logs, metrics, plots)
+/results/
