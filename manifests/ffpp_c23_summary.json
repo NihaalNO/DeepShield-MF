@@ -1,0 +1,52 @@
+{
+  "dataset": "FaceForensics++",
+  "compression": "c23",
+  "split_source": "official FaceForensics++ source-pair split (manifests/ffpp_official_splits)",
+  "class_names": [
+    "fake",
+    "real"
+  ],
+  "n_videos": 6000,
+  "n_families": 500,
+  "families_spanning_splits": 0,
+  "videos_per_split": {
+    "test": 840,
+    "train": 4320,
+    "val": 840
+  },
+  "families_per_split": {
+    "test": 70,
+    "train": 360,
+    "val": 70
+  },
+  "videos_per_split_and_method": {
+    "train": {
+      "original": 720,
+      "Deepfakes": 720,
+      "Face2Face": 720,
+      "FaceShifter": 720,
+      "FaceSwap": 720,
+      "NeuralTextures": 720
+    },
+    "val": {
+      "original": 140,
+      "Deepfakes": 140,
+      "Face2Face": 140,
+      "FaceShifter": 140,
+      "FaceSwap": 140,
+      "NeuralTextures": 140
+    },
+    "test": {
+      "original": 140,
+      "Deepfakes": 140,
+      "Face2Face": 140,
+      "FaceShifter": 140,
+      "FaceSwap": 140,
+      "NeuralTextures": 140
+    }
+  },
+  "skipped_non_video_files": [
+    "manipulated_sequences/Face2Face/c23/videos/tmpcwcamzoj"
+  ],
+  "problems": []
+}

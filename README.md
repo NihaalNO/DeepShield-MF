@@ -150,6 +150,91 @@ Put the videos into `data/FF++/fake/` and `data/FF++/real/`. Then run, in `noteb
 
 ---
 
+## FaceForensics++ research pipeline (scripts)
+
+The evaluation work on FaceForensics++ (source-disjoint splits, face crops, ablations) lives in `deepshield/` and `scripts/`, not in the notebooks. All locations are defined in `deepshield/paths.py`.
+
+**Dataset location.** Keep the official FaceForensics++ layout and point `DEEPSHIELD_FFPP_DIR` at it in `.env` (default `<repo>/data/FaceForensics++`). Nothing is copied.
+
+```text
+<DEEPSHIELD_FFPP_DIR>/
+├── original_sequences/youtube/c23/videos/NNN.mp4
+└── manipulated_sequences/{Deepfakes,Face2Face,FaceShifter,FaceSwap,NeuralTextures}/c23/videos/TTT_SSS.mp4
+```
+
+**Step 1: manifest and splits** (about a minute):
+
+```bash
+python scripts/build_manifest.py
+```
+
+Writes `manifests/ffpp_c23.csv` (one row per video: label, method, target and source ID, source family, split, frame count, size) and `manifests/ffpp_c23_summary.json`. A fake `TTT_SSS` and its two originals form one source family. Families follow the official FaceForensics++ split in `manifests/ffpp_official_splits/` (360/70/70 pairs), so no family is shared between train, validation and test. The script exits with an error if one is. Both files are tracked in git.
+
+**Step 2: face crops** (roughly 1.5 hours for 6,000 videos with 8 workers, resumable):
+
+```bash
+python scripts/extract_faces.py --workers 8
+```
+
+Samples 32 frames per video (every 8th frame, centred), tracks one face with OpenCV's YuNet detector (`assets/face_detector/face_detection_yunet_2023mar.onnx`, from the OpenCV model zoo) and writes:
+
+```text
+data/ffpp_c23/
+├── faces/<method>/<video>/<frame>.jpg       # 224x224 tracked face crop
+├── faces/<method>/<video>/meta.json         # frame indices, crop boxes, detection rate
+├── fullframe/<method>/<video>/<frame>.jpg   # same frames, whole frame resized to 224x224
+└── frame_index.csv                          # one row per video: status, frames saved, detection rate
+```
+
+Videos where a face is found in fewer than half of the frames are marked `failed` in `frame_index.csv` and get no crops. Use `--limit N` to test on the first N videos per method.
+
+**Step 3: cache backbone features** (about 20 minutes per variant on an RTX 3050):
+
+```bash
+python scripts/cache_features.py --variant faces
+```
+
+```bash
+python scripts/cache_features.py --variant fullframe
+```
+
+ResNet50 and ViT-B/16 are frozen in the hybrid model, so their per-frame outputs are computed once and reused by every experiment. The grayscale frames are cached too, because the trainable FFT branch needs pixels.
+
+```text
+data/ffpp_c23/features/<variant>/
+├── resnet50.npy               # float16 [videos, 32, 2048]
+├── vit_base_patch16_224.npy   # float16 [videos, 32, 768]
+├── gray.npy                   # uint8   [videos, 32, 224, 224]  (about 9.6 GB)
+├── index.csv                  # row -> video_id
+└── meta.json                  # backbones, normalisation, shapes
+```
+
+**Step 4: train and validate one experiment:**
+
+```bash
+python scripts/train.py --exp F --seed 0
+```
+
+`--exp` selects a row of the ablation matrix (`deepshield/models.py`): A ResNet50, B ViT, C ResNet50+ViT (all mean-pooled), D ResNet50+BiLSTM, E ResNet50+ViT+BiLSTM, F the full hybrid with FFT. Other options: `--variant fullframe`, `--seq-len 4|8|16`, `--train-methods` (leave-one-method-out), `--limit-families N` (quick test).
+
+How a video is scored: its 32 cached frames are cut into overlapping windows (8 frames, 50 % overlap, so 7 windows). The model gives each window a fake probability, and the video score is their mean. The video is called fake if that score is at or above a threshold chosen on the validation split to maximise balanced accuracy. The best epoch is chosen by validation video-level ROC-AUC.
+
+Each run writes to `results/ffpp_c23/<run>/seed<S>/`:
+
+```text
+config.json                   # full configuration, data counts, hardware
+checkpoints/best.pth          # weights + model config + class_names + threshold
+logs/history.csv              # per-epoch losses, validation AUC, learning rate, seconds
+metrics/val_metrics.json      # video-level metrics, per-method breakdown, 95 % CIs
+predictions/val_videos.csv    # one row per validation video
+```
+
+Checkpoints carry their own `class_names`, model configuration and threshold. `deepshield.engine.load_checkpoint` refuses a checkpoint whose class order differs from the project's (`fake`, `real`). Confidence intervals resample source families, not individual videos.
+
+The **test split must stay untouched** until the final evaluation: tune and select models on train and validation only. `FeatureStore.split_rows("test")` raises an error unless called with `allow_test=True`, and `scripts/train.py` never does that.
+
+---
+
 ## Training and evaluation (notebooks)
 
 Open the notebooks with the project `.venv` as kernel:
