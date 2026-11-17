@@ -1,0 +1,15 @@
+# Dealt with taste-skill 2.5.1 for a software product: palette lunar-grey-bronze, type instrument.
+[theme]
+base = "dark"
+primaryColor = "#a08672"
+backgroundColor = "#111111"
+secondaryBackgroundColor = "#1c1c1c"
+textColor = "#f2f2f2"
+font = "Instrument Sans:https://fonts.googleapis.com/css2?family=Instrument+Sans:wdth,wght@75..100,400..700&display=swap"
+codeFont = "DM Mono:https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
