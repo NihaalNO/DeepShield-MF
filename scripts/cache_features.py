@@ -17,7 +17,7 @@ Writes  <DATA_ROOT>/ffpp_c23/features/<variant>/
 Backbones and preprocessing are the ones in notebooks/frac_df_cnnvit_fft_temporal.ipynb:
 timm resnet50 / vit_base_patch16_224 (pretrained, num_classes=0), ImageNet mean/std.
 
-usage:  python scripts/cache_features.py --variant faces [--limit 20] [--batch-videos 4]
+usage:  python scripts/cache_features.py [--dataset ffpp_c23|celebdf_v1|celebdf_v2] --variant faces [--limit 20] [--batch-videos 4]
 """
 import argparse
 import csv
@@ -49,15 +49,16 @@ def load_video(frame_dir):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dataset", choices=sorted(paths.DATASETS), default="ffpp_c23")
     ap.add_argument("--variant", choices=["faces", "fullframe"], default="faces")
     ap.add_argument("--batch-videos", type=int, default=4, help="videos per GPU batch (x32 frames)")
     ap.add_argument("--no-gray", action="store_true", help="do not cache grayscale frames (FFT branch input)")
     ap.add_argument("--limit", type=int, default=0, help="only the first N videos (testing)")
-    ap.add_argument("--out-root", type=Path, default=None, help="default <DATA_ROOT>/ffpp_c23/features")
+    ap.add_argument("--out-root", type=Path, default=None, help="default <DATA_ROOT>/<dataset>/features")
     ap.add_argument("--io-threads", type=int, default=8)
     args = ap.parse_args()
 
-    base = paths.FFPP_FACES_DIR.parent
+    base = paths.DATASETS[args.dataset]["data_dir"]
     frames_root = base / args.variant
     index_rows = [r for r in csv.DictReader(open(base / "frame_index.csv", encoding="utf-8")) if r["status"] == "ok"]
     video_ids = sorted(r["video_id"] for r in index_rows)

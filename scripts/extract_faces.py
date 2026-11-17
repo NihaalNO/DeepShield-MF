@@ -1,6 +1,6 @@
-"""Extract tracked face crops (and matching full frames) from FaceForensics++ videos.
+"""Extract tracked face crops (and matching full frames) from the videos of a dataset manifest.
 
-For every video in manifests/ffpp_c23.csv this samples N frames at a fixed
+For every video in the manifest (default manifests/ffpp_c23.csv; --dataset selects another) this samples N frames at a fixed
 stride from the middle of the video, tracks one face across them, and saves
 
     <DATA_ROOT>/ffpp_c23/faces/<method>/<video>/<frame_idx:05d>.jpg      224x224 face crop
@@ -17,7 +17,7 @@ a detection.
 
 The run is resumable: videos with a meta.json are skipped unless --overwrite.
 
-usage:  python scripts/extract_faces.py [--workers 6] [--limit 20] [--frames 32]
+usage:  python scripts/extract_faces.py [--dataset ffpp_c23|celebdf_v1|celebdf_v2] [--workers 6] [--limit 20] [--frames 32]
 """
 import argparse
 import csv
@@ -185,21 +185,23 @@ def process(job):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dataset", choices=sorted(paths.DATASETS), default="ffpp_c23")
     ap.add_argument("--frames", type=int, default=32, help="frames per video")
     ap.add_argument("--max-stride", type=int, default=8, help="sample every k-th frame (reduced for short videos)")
     ap.add_argument("--margin", type=float, default=1.3, help="crop side = margin x face size")
     ap.add_argument("--min-det-rate", type=float, default=0.5)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--limit", type=int, default=0, help="only the first N videos per method (for testing)")
-    ap.add_argument("--out-root", type=Path, default=None, help="default <DATA_ROOT>/ffpp_c23")
+    ap.add_argument("--out-root", type=Path, default=None, help="default <DATA_ROOT>/<dataset>")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
-    if not paths.FFPP_MANIFEST.is_file():
-        sys.exit(f"Manifest not found: {paths.FFPP_MANIFEST}. Run scripts/build_manifest.py first.")
+    ds = paths.DATASETS[args.dataset]
+    if not ds["manifest"].is_file():
+        sys.exit(f"Manifest not found: {ds['manifest']}. Build it first (scripts/build_manifest*.py).")
     if not paths.FACE_DETECTOR_MODEL.is_file():
         sys.exit(f"Face detector model not found: {paths.FACE_DETECTOR_MODEL}")
-    rows = list(csv.DictReader(open(paths.FFPP_MANIFEST, encoding="utf-8")))
+    rows = list(csv.DictReader(open(ds["manifest"], encoding="utf-8")))
     if args.limit:
         seen, kept = {}, []
         for r in rows:
@@ -208,13 +210,13 @@ def main():
                 kept.append(r)
         rows = kept
 
-    out_root = args.out_root or paths.FFPP_FACES_DIR.parent
+    out_root = args.out_root or ds["data_dir"]
     public = {"frames": args.frames, "max_stride": args.max_stride, "margin": args.margin,
               "min_det_rate": args.min_det_rate, "out_size": OUT_SIZE, "jpeg_quality": JPEG_QUALITY,
               "detector": paths.FACE_DETECTOR_MODEL.name}
     cfg = {**public, "public": public, "min_frames": min(8, args.frames), "overwrite": args.overwrite,
-           "ffpp_root": paths.FFPP_ROOT, "faces_dir": out_root / "faces", "full_dir": out_root / "fullframe"}
-    print("Reading videos from :", paths.FFPP_ROOT)
+           "ffpp_root": ds["root"], "faces_dir": out_root / "faces", "full_dir": out_root / "fullframe"}
+    print("Reading videos from :", ds["root"])
     print("Face crops ->       :", cfg["faces_dir"])
     print("Full frames ->      :", cfg["full_dir"])
     print(f"Videos: {len(rows)} | frames/video: {args.frames} | workers: {args.workers}", flush=True)

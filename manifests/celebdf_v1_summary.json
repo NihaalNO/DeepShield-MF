@@ -1,0 +1,22 @@
+{
+  "dataset": "Celeb-DF v1",
+  "source_list": "List_of_testing_videos.txt",
+  "videos": 100,
+  "by_label": {
+    "real": 38,
+    "fake": 62
+  },
+  "by_folder": {
+    "Celeb-real": 8,
+    "Celeb-synthesis": 62,
+    "YouTube-real": 30
+  },
+  "families": 41,
+  "frames_min_median_max": [
+    105,
+    380,
+    550
+  ],
+  "use": "cross-dataset test only; never used for training, model selection or thresholds",
+  "problems": []
+}

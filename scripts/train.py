@@ -32,7 +32,7 @@ from deepshield.models import EXPERIMENTS, HybridHead, count_params  # noqa: E40
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--exp", required=True, choices=sorted(EXPERIMENTS), help="ablation row (A-F)")
+    ap.add_argument("--exp", required=True, choices=sorted(EXPERIMENTS), help="experiment row: A-F ablations, I-M3 improvements (deepshield/models.py)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--variant", choices=["faces", "fullframe"], default="faces")
     ap.add_argument("--seq-len", type=int, default=8)
@@ -59,7 +59,7 @@ def main():
     engine.set_seed(args.seed)
 
     model_config = dict(EXPERIMENTS[args.exp])
-    store = FeatureStore(args.variant)
+    store = FeatureStore(args.variant, cnn_backbone=model_config.get("cnn_backbone", "resnet50"))
     train_rows = store.split_rows("train", limit_families=args.limit_families, methods=args.train_methods)
     val_rows = store.split_rows("val", limit_families=args.limit_families)
     fake_index = paths.CLASS_NAMES.index("fake")
@@ -97,6 +97,11 @@ def main():
           f"trainable params {config['trainable_params']:,} | device {device}", flush=True)
 
     y_val, methods_val, families_val = engine.rows_to_arrays(val_rows, fake_index)
+    # Leave-one-method-out: model selection and the threshold may only see validation videos of the
+    # training methods (plus reals), otherwise the held-out method would leak into the selection.
+    sel = np.ones(len(val_rows), bool)
+    if args.train_methods is not None:
+        sel = np.isin(methods_val, ["original", *args.train_methods])
     ckpt_path = dirs["checkpoints"] / "best.pth"
     history, best_auc, best_epoch, bad = [], -1.0, 0, 0
     t_start = time.time()
@@ -104,7 +109,7 @@ def main():
         t0 = time.time()
         train_loss = engine.train_epoch(model, train_batches, criterion, optimizer)
         p_val, val_loss = engine.predict(model, val_batches, criterion, fake_index)
-        val_auc = metrics.safe_auc(y_val, p_val)
+        val_auc = metrics.safe_auc(y_val[sel], p_val[sel])
         scheduler.step(val_auc)
         history.append({"epoch": epoch, "train_loss": round(train_loss, 5), "val_loss": round(val_loss, 5),
                         "val_video_auc": round(val_auc, 5), "lr": optimizer.param_groups[0]["lr"],
@@ -118,7 +123,7 @@ def main():
               f"{history[-1]['seconds']:.0f}s{' *' if improved else ''}", flush=True)
         if improved:
             best_auc, best_epoch, bad = val_auc, epoch, 0
-            threshold = metrics.pick_threshold(y_val, p_val)
+            threshold = metrics.pick_threshold(y_val[sel], p_val[sel])
             engine.save_checkpoint(ckpt_path, model, model_config, data_config, paths.CLASS_NAMES, threshold,
                                    extra={"run_name": run_name, "seed": args.seed, "epoch": epoch, "val_video_auc": val_auc})
         else:
@@ -136,6 +141,8 @@ def main():
     report.update({"split": "val", "note": "threshold and model selection used this split; not a held-out estimate",
                    "best_epoch": best_epoch, "epochs_run": len(history), "val_loss": val_loss,
                    "train_minutes": round(train_minutes, 2), "trainable_params": config["trainable_params"],
+                   "selection_roc_auc": metrics.safe_auc(y_val[sel], p_val[sel]),
+                   "selection_videos": int(sel.sum()), "train_methods": args.train_methods,
                    "ci95_family_bootstrap": metrics.bootstrap_ci(y_val, p_val, families_val, threshold),
                    "checkpoint": str(ckpt_path)})
     (dirs["metrics"] / "val_metrics.json").write_text(json.dumps(report, indent=2) + "\n")

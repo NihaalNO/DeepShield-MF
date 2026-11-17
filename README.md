@@ -231,6 +231,58 @@ predictions/val_videos.csv    # one row per validation video
 
 Checkpoints carry their own `class_names`, model configuration and threshold. `deepshield.engine.load_checkpoint` refuses a checkpoint whose class order differs from the project's (`fake`, `real`). Confidence intervals resample source families, not individual videos.
 
+**Step 5: ablation matrix** (resumable; finished runs are skipped):
+
+```bash
+python scripts/run_ablations.py
+```
+
+Trains rows A–F with 3 seeds, picks the best BiLSTM row by mean validation AUC, then runs the frame-order shuffle test, sequence lengths 4 and 16 and the full-frame comparison for it. `scripts/summarize.py` writes `results/ffpp_c23/summary/ablation_table.md` and the CSVs behind it.
+
+**Step 6: analysis of trained runs** (validation split only; nothing is retrained except in the first script):
+
+| Script | What it does | Output in `results/ffpp_c23/` |
+| --- | --- | --- |
+| `scripts/run_lomo.py` | Leave-one-method-out: trains on four manipulation methods and scores the fifth. Model selection and threshold use only the four training methods. | `<exp>_faces_T8_lomo-<Method>/`, `summary/lomo_table.md` |
+| `scripts/calibration.py` | ECE, Brier score and NLL of the video-level P(fake), raw and after Platt scaling cross-fitted over families. | `summary/calibration_table.md`, `summary/plots/reliability_<run>.png` |
+| `scripts/robustness.py` | Re-scores the frozen checkpoints on degraded face crops: JPEG, blur, downscaling, noise, brightness. | `summary/robustness_table.md`, `summary/plots/robustness_auc.png` |
+| `scripts/explain_occlusion.py --run-dir <run>/seed0` | Occlusion-sensitivity maps (7x7 grid) and a deletion test. | `<run>/seed0/explanations/` |
+| `scripts/profile_compute.py` | Time per stage (decode, face crop, each backbone, head) on GPU and CPU, parameters, peak GPU memory. Run it with the GPU otherwise idle. | `summary/compute_profile.md` |
+
+**Step 7: optional model changes** (validation split only):
+
+```bash
+python scripts/cache_extra_backbone.py --backbone efficientnet_b0
+```
+
+```bash
+python scripts/run_improvements.py
+```
+
+`run_improvements.py` trains one-change variants of the ablation rows on the cached features with 3 seeds and writes `summary/improvements_table.md`. The rows are defined in `deepshield/models.py`: `I` branch projections before fusion, `J` learned softmax gate over the branches (`J0`: fixed equal weights, the gate's ablation), `K` one-directional LSTM, `L` EfficientNet-B0 instead of ResNet50 (needs the first command), `M1`–`M3` frequency-band variants of the FFT branch.
+
+```bash
+python scripts/finetune_e2e.py --mode finetune --aug sequence
+```
+
+`finetune_e2e.py` trains on face-crop pixels instead of cached features: `--mode frozen|finetune` (fine-tuning unfreezes the last ResNet50 stage and the last two ViT blocks), `--aug none|sequence|frame` (the same augmentation for all frames of a window, or a different one per frame). It uses 120 training families by default so that a run fits a 6 GB GPU in about 1.5 hours, and it also scores the result on degraded validation crops. Runs go to `results/ffpp_c23/e2e_<mode>_aug-<aug>_fam120/`.
+
+**Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). Only the official test lists are used, and only for the final evaluation: the project never trains, selects models or sets thresholds on Celeb-DF.
+
+```bash
+python scripts/build_manifest_celebdf.py --version v2
+```
+
+```bash
+python scripts/extract_faces.py --dataset celebdf_v2
+```
+
+```bash
+python scripts/cache_features.py --dataset celebdf_v2 --variant faces
+```
+
+The same three commands with `v1` / `celebdf_v1` prepare Celeb-DF v1. Manifests go to `manifests/celebdf_<version>.csv` (tracked), derived data to `data/celebdf_<version>/` with the same layout as `data/ffpp_c23/`.
+
 The **test split must stay untouched** until the final evaluation: tune and select models on train and validation only. `FeatureStore.split_rows("test")` raises an error unless called with `allow_test=True`, and `scripts/train.py` never does that.
 
 ---

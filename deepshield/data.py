@@ -12,19 +12,22 @@ SPLITS = ("train", "val", "test")
 
 
 class FeatureStore:
-    """Read-only view of <DATA_ROOT>/ffpp_c23/features/<variant>/ joined with the manifest."""
+    """Read-only view of <DATA_ROOT>/<dataset>/features/<variant>/ joined with the dataset manifest."""
 
-    def __init__(self, variant="faces", root=None, in_memory=True, gray_in_memory=False):
-        self.variant = variant
-        self.dir = Path(root or paths.FFPP_FACES_DIR.parent / "features") / variant
+    def __init__(self, variant="faces", root=None, in_memory=True, gray_in_memory=False, dataset="ffpp_c23",
+                 cnn_backbone="resnet50"):
+        self.variant, self.dataset = variant, dataset
+        ds = paths.DATASETS[dataset]
+        self.dir = Path(root or ds["data_dir"] / "features") / variant
         if not (self.dir / "meta.json").is_file():
-            raise FileNotFoundError(f"No feature cache at {self.dir}. Run scripts/cache_features.py --variant {variant}.")
+            raise FileNotFoundError(f"No feature cache at {self.dir}. Run scripts/cache_features.py "
+                                    f"--dataset {dataset} --variant {variant}.")
         self.meta = json.loads((self.dir / "meta.json").read_text())
         done = np.load(self.dir / "done.npy")
         if not done.all():
             raise RuntimeError(f"Feature cache at {self.dir} is incomplete ({int(done.sum())}/{len(done)} videos).")
 
-        manifest = {r["video_id"]: r for r in csv.DictReader(open(paths.FFPP_MANIFEST, encoding="utf-8"))}
+        manifest = {r["video_id"]: r for r in csv.DictReader(open(ds["manifest"], encoding="utf-8"))}
         self.rows = []
         for r in csv.DictReader(open(self.dir / "index.csv", encoding="utf-8")):
             m = manifest[r["video_id"]]
@@ -36,7 +39,10 @@ class FeatureStore:
             arr = np.load(self.dir / f"{name}.npy", mmap_mode="r")
             return np.ascontiguousarray(arr) if in_memory else arr
 
-        self.cnn = load("resnet50")
+        if not (self.dir / f"{cnn_backbone}.npy").is_file():
+            raise FileNotFoundError(f"No {cnn_backbone} features in {self.dir}. Run scripts/cache_extra_backbone.py "
+                                    f"--dataset {dataset} --variant {variant} --backbone {cnn_backbone}.")
+        self.cnn = load(cnn_backbone)  # features fed to the model's "cnn" branch
         self.vit = load("vit_base_patch16_224")
         # Grayscale frames (FFT branch input, ~9.6 GB): on disk by default, in RAM when requested.
         self.gray = None

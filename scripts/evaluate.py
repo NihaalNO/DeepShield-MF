@@ -34,7 +34,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, ckpt = engine.load_checkpoint(args.run_dir / "checkpoints" / "best.pth", device)
     dc, threshold = ckpt["data_config"], ckpt["threshold"]
-    store = FeatureStore(dc["variant"])
+    store = FeatureStore(dc["variant"], cnn_backbone=ckpt["model_config"].get("cnn_backbone", "resnet50"))
     rows = store.split_rows("val")
     y, methods, _ = engine.rows_to_arrays(rows, ckpt["fake_index"])
 

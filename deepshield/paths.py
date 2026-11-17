@@ -5,6 +5,8 @@ the project-root `.env`); real environment variables take precedence.
 
     DEEPSHIELD_DATA_DIR   derived data (frames, face crops, features)  default <repo>/data
     DEEPSHIELD_FFPP_DIR   FaceForensics++ download (official layout)   default <repo>/data/FaceForensics++
+    DEEPSHIELD_CELEBDF_V1_DIR / DEEPSHIELD_CELEBDF_V2_DIR
+                          Celeb-DF downloads (official layout)         default <repo>/data/Celeb-DF-V1, -V2
 """
 import os
 from pathlib import Path
@@ -41,3 +43,15 @@ FFPP_FRAME_INDEX = DATA_ROOT / "ffpp_c23" / "frame_index.csv"
 # Class contract used everywhere (matches backend CLASS_NAMES): index 0 = fake, 1 = real
 CLASS_NAMES = ["fake", "real"]
 CLASS_TO_IDX = {name: i for i, name in enumerate(CLASS_NAMES)}
+
+# Datasets that go through the same crop -> feature pipeline. FF++ is the training dataset;
+# the Celeb-DF official test lists are used only for the final cross-dataset evaluation.
+#   root      downloaded videos            manifest  tracked CSV (same columns for all datasets)
+#   data_dir  derived data: <data_dir>/{faces, fullframe, features, frame_index.csv}
+DATASETS = {
+    "ffpp_c23": {"root": FFPP_ROOT, "manifest": FFPP_MANIFEST, "data_dir": DATA_ROOT / "ffpp_c23"},
+    "celebdf_v1": {"root": _env_path("DEEPSHIELD_CELEBDF_V1_DIR", DATA_ROOT / "Celeb-DF-V1"),
+                   "manifest": MANIFEST_DIR / "celebdf_v1.csv", "data_dir": DATA_ROOT / "celebdf_v1"},
+    "celebdf_v2": {"root": _env_path("DEEPSHIELD_CELEBDF_V2_DIR", DATA_ROOT / "Celeb-DF-V2"),
+                   "manifest": MANIFEST_DIR / "celebdf_v2.csv", "data_dir": DATA_ROOT / "celebdf_v2"},
+}
