@@ -265,7 +265,19 @@ python scripts/run_improvements.py
 python scripts/finetune_e2e.py --mode finetune --aug sequence
 ```
 
-`finetune_e2e.py` trains on face-crop pixels instead of cached features: `--mode frozen|finetune` (fine-tuning unfreezes the last ResNet50 stage and the last two ViT blocks), `--aug none|sequence|frame` (the same augmentation for all frames of a window, or a different one per frame). It uses 120 training families by default so that a run fits a 6 GB GPU in about 1.5 hours, and it also scores the result on degraded validation crops. Runs go to `results/ffpp_c23/e2e_<mode>_aug-<aug>_fam120/`.
+`finetune_e2e.py` trains on face-crop pixels instead of cached features: `--mode frozen|finetune` (fine-tuning unfreezes the last ResNet50 stage and the last two ViT blocks), `--aug none|sequence|frame` (the same augmentation for all frames of a window, or a different one per frame). It uses 120 training families by default (about 45 minutes on a 6 GB laptop GPU; `--train-families 360` uses the whole training split, about 2 hours), and it also scores the result on degraded validation crops. Runs go to `results/ffpp_c23/e2e_<mode>_aug-<aug>_fam<N>/` or `--name`.
+
+**Step 8: final evaluation** (run once, after all choices are made on validation):
+
+```bash
+python scripts/finetune_e2e.py --mode finetune --aug frame --train-families 360 --name e2e_finetune_aug-frame_final
+```
+
+```bash
+python scripts/final_eval.py
+```
+
+`final_eval.py` scores the models fixed in `docs/final_evaluation_protocol.md` on the FF++ test split and the Celeb-DF v1/v2 test lists with their frozen validation thresholds. It writes `results/final/<dataset>/<model>.json` and `results/final/final_table.md`, and never overwrites an existing result.
 
 **Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). Only the official test lists are used, and only for the final evaluation: the project never trains, selects models or sets thresholds on Celeb-DF.
 
@@ -495,9 +507,65 @@ Recorded in `notebooks/DD_ViT_Final.ipynb` (Kaggle run, random 80/20 split at **
 
 Because the split is per frame, frames of the same video can appear in both training and validation. These numbers are therefore optimistic.
 
-### Hybrid model
+### Research pipeline (FaceForensics++ c23, Chapter 16)
 
-Experimental. No validated result is recorded in the repository. Run the notebook and read `results/hybrid_cnn_vit_fft_bilstm/metrics/final_metrics.json`.
+Measured with the scripts above. Video level; the positive class is fake. Splits are the official
+source-family-disjoint FF++ splits. Models and thresholds were chosen on the validation split only. The test
+split and Celeb-DF were each scored once, under the protocol in
+[`docs/final_evaluation_protocol.md`](docs/final_evaluation_protocol.md), written before any test score
+existed.
+
+**Final evaluation** (`scripts/final_eval.py`; thresholds frozen from FF++ validation):
+
+| Data | Model | AUC | Balanced acc | Fake recall | Specificity |
+| --- | --- | ---: | ---: | ---: | ---: |
+| FF++ test (839 videos) | Fine-tuned ResNet50+ViT, per-frame aug. | **0.853** (95 % CI 0.823–0.886) | 0.795 | 0.783 | 0.807 |
+| | C: ResNet50+ViT, frozen features | 0.752 ± 0.004 | 0.672 | 0.729 | 0.614 |
+| | F: full hybrid, frozen features | 0.745 ± 0.009 | 0.676 | 0.732 | 0.619 |
+| Celeb-DF v1 (100) | Fine-tuned ResNet50+ViT, per-frame aug. | **0.837** (0.740–0.922) | 0.741 | 0.903 | 0.579 |
+| | C | 0.704 ± 0.027 | 0.572 | 0.968 | 0.175 |
+| | F | 0.658 ± 0.007 | 0.532 | 0.914 | 0.149 |
+| Celeb-DF v2 (516) | Fine-tuned ResNet50+ViT, per-frame aug. | **0.781** (0.738–0.821) | 0.718 | 0.882 | 0.554 |
+| | C | 0.627 ± 0.013 | 0.578 | 0.881 | 0.275 |
+| | F | 0.609 ± 0.015 | 0.565 | 0.861 | 0.269 |
+
+C and F: mean (± std for AUC) over 3 seeds. The final model is one training run (seed 0) on all 360 training
+families; its CI comes from resampling source families (FF++) or identities (Celeb-DF). FF++ test AUC per
+method for the final model: Deepfakes 0.929, Face2Face 0.880, FaceShifter 0.859, FaceSwap 0.847,
+NeuralTextures 0.750.
+
+**What the experiments showed** (validation split unless stated; details in `results/ffpp_c23/summary/`):
+
+* **Fine-tuning is the change that matters.** Unfreezing ResNet50 `layer4` and the last two ViT blocks raised
+  validation AUC from 0.670 to 0.774–0.796 on the same 120-family subset, and to 0.867 on all training data.
+  It holds on the test split (0.853 vs 0.752) and across datasets (Celeb-DF v2 0.781 vs 0.627).
+* **The original hybrid's extra parts add nothing on frozen features.** Mean-pooled ResNet50+ViT (row C, 0.73M
+  trainable parameters) matches or beats the full hybrid with FFT branch and BiLSTM (row F, 4.96M) on
+  validation (0.754 vs 0.745), on the test split and on Celeb-DF.
+* **The BiLSTM does not use frame order.** Shuffling frames at evaluation changes AUC by less than 0.001.
+  Window length 4, 8 or 16 makes no difference.
+* **Face cropping is worth about 0.17 AUC** (0.750 vs 0.577 on full frames).
+* **Unseen manipulation methods lose 0.07–0.14 AUC** (leave-one-method-out, frozen features).
+* **Raw probabilities are miscalibrated** (ECE 0.21–0.28); Platt scaling cross-fitted on validation brings ECE
+  to 0.01–0.03.
+* **Blur and downscaling break the frozen-feature models' threshold**: specificity drops from 0.69 to 0.17 at
+  mild blur. The fine-tuned model degrades less (validation AUC 0.867 clean, 0.812 blurred, 0.810 at half
+  resolution).
+* **Section 16.4 head changes did not help**: branch projections, a learned softmax gate (no better than its
+  fixed-weight ablation, and unstable across seeds), a causal LSTM (−0.006 AUC, half the parameters), and FFT
+  band variants were all within noise of their reference rows. EfficientNet-B0 beat ResNet50 as a single
+  encoder (+0.050 AUC) but not ResNet50+ViT.
+* **Sequence-consistent augmentation gave no advantage** over per-frame augmentation (validation AUC 0.781
+  vs 0.796, one seed each).
+* **Cross-dataset thresholds transfer badly.** On Celeb-DF the frozen-feature models call most real videos
+  fake (specificity 0.15–0.28); the fine-tuned model keeps 0.55–0.58. The FF++ threshold is not a reliable
+  operating point for new data.
+
+Compute (GPU, 32 frames): about 1 s per video end to end, dominated by video decoding and face detection;
+CPU about 6 s, dominated by the ViT.
+
+The hybrid notebook (`notebooks/`) is unchanged and still writes to
+`results/hybrid_cnn_vit_fft_bilstm/`; no result from it is recorded.
 
 ---
 
@@ -510,6 +578,7 @@ Experimental. No validated result is recorded in the repository. Run the noteboo
 * `deepfake_detection_vit_best.ipynb` is an archived Colab experiment and does not run as-is.
 * The Flask development server (`python backend/app.py`) is for local use. Use gunicorn/Docker (Linux) for anything public.
 * Model performance also varies with resolution, compression, lighting, face quality and unseen manipulation methods.
+* Research pipeline: the final fine-tuned model is a single training run (one seed); its test and Celeb-DF numbers carry the bootstrap CIs shown, not seed variance. Its checkpoint (`results/ffpp_c23/e2e_finetune_aug-frame_final/`) is local only and is not used by the app. Celeb-DF v1 has only 100 test videos, so its CI is wide.
 
 ---
 
