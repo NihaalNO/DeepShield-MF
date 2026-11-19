@@ -1,9 +1,12 @@
 FROM python:3.11-slim
 
+# The image ships only backend/, so it serves the ViT frame classifier. Serving the fine-tuned
+# video model needs deepshield/, scripts/, assets/face_detector/ and its checkpoint as well.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
-    PORT=7860
+    PORT=7860 \
+    SERVE_MODEL=vit
 
 WORKDIR /app
 

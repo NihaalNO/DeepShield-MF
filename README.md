@@ -4,14 +4,15 @@
 
 DeepShield-MF is a deepfake detection system that analyzes videos using spatial, frequency-domain and temporal features to classify content as **Real** or **Fake**.
 
-The repository contains two model tracks:
+The repository contains these model tracks:
 
 | Track | What it is | Where it lives | Served by the app? |
 | --- | --- | --- | --- |
-| **ViT baseline** | Frame-level ViT-B/16 classifier | `notebooks/DD_ViT_Final.ipynb` → `backend/models/best_vit_model.pth` | **Yes**: the Flask backend serves this model |
-| **Hybrid research model** | Video-level ResNet50 + ViT-B/16 + FFT + BiLSTM | `notebooks/frac_df_cnnvit_fft_temporal.ipynb` | No. It is trained and evaluated in the notebook only |
+| **Fine-tuned ResNet50 + ViT** | Video-level model on face crops: ResNet50 and ViT-B/16 with their last layers fine-tuned, scored over 8-frame windows | `scripts/finetune_e2e.py` → `results/ffpp_c23/e2e_finetune_aug-frame_final/` | **Yes, by default** (`SERVE_MODEL=finetuned`) |
+| **ViT baseline** | Frame-level ViT-B/16 classifier | `notebooks/DD_ViT_Final.ipynb` → `backend/models/best_vit_model.pth` | With `SERVE_MODEL=vit`, and in the Docker image |
+| **Hybrid research model** | Video-level ResNet50 + ViT-B/16 + FFT + BiLSTM | `notebooks/frac_df_cnnvit_fft_temporal.ipynb`, `scripts/` (row F) | No; evaluated by the research scripts only |
 
-> The deployed app (Flask + Streamlit) runs the **ViT baseline**. The hybrid model is the research model; its checkpoint is written to `results/hybrid_cnn_vit_fft_bilstm/` and is **not** loaded by the backend (see [Limitations](#limitations)).
+> The local app (Flask + Streamlit) serves the **fine-tuned ResNet50 + ViT**, the final model of the research pipeline (0.853 AUC on the FF++ test split; see [Results](#results)). The ViT baseline remains available with `SERVE_MODEL=vit`.
 
 ---
 
@@ -35,7 +36,7 @@ The repository contains two model tracks:
 ```text
 DeepShield-MF/
 ├── backend/
-│   ├── app.py                  # Flask API: GET /health, POST /predict (ViT baseline)
+│   ├── app.py                  # Flask API: GET /health, POST /predict (fine-tuned model or ViT baseline)
 │   ├── requirements.txt        # -> points to ../requirements.txt
 │   └── models/
 │       └── best_vit_model.pth  # deployed checkpoint (NOT in git, ~343 MB)
@@ -375,7 +376,14 @@ Model weights are git-ignored. The original README states that the ViT checkpoin
 
 ## Run the app locally (backend + Streamlit)
 
-Prerequisites: setup done, and `backend/models/best_vit_model.pth` present. Without the checkpoint the backend still starts, but `/health` reports `model_loaded: false` and `/predict` returns HTTP 503 instead of guessing with untrained weights.
+Prerequisites: setup done, and the checkpoint of the served model present:
+
+* `SERVE_MODEL=finetuned` (default): `results/ffpp_c23/e2e_finetune_aug-frame_final/seed0/checkpoints/best_trainable.pth`, written by README Step 8 (`scripts/finetune_e2e.py`). It holds only the fine-tuned layers; the rest of ResNet50 and ViT-B/16 comes from the `timm` pretrained weights (downloaded once, then cached). It also needs `deepshield/`, `scripts/` and the face detector in `assets/face_detector/`.
+* `SERVE_MODEL=vit`: `backend/models/best_vit_model.pth`.
+
+Without the checkpoint the backend still starts, but `/health` reports `model_loaded: false` and `/predict` returns HTTP 503 instead of guessing with untrained weights.
+
+**What the fine-tuned model does with an upload.** Exactly what it was evaluated with: 32 frames at a constant stride (every 8th frame, fewer for short clips) from the middle of the video, a YuNet face track, square crops of 1.3x the face, 7 windows of 8 frames, and the mean window P(fake) as the video score. The video is fake if the score reaches the threshold chosen on the FF++ validation split (0.653). A video with a face in fewer than half of those frames is refused, and so is an image without a face. Only about 10 seconds from the middle of a video are read. A still image is scored as one window of the same face repeated, which the model was never evaluated on. On the GPU a video takes about 1 second.
 
 Optional: `copy .env.example .env` (Windows) or `cp .env.example .env` and edit. The defaults work without a `.env`.
 
@@ -388,8 +396,9 @@ python backend/app.py
 Expected log lines:
 
 ```text
-Using device: cpu
-Model loaded from ...\backend\models\best_vit_model.pth
+Using device: cuda
+Serving model: finetuned
+Fine-tuned model loaded from ...\results\ffpp_c23\e2e_finetune_aug-frame_final\seed0\checkpoints\best_trainable.pth (threshold 0.6530)
 Class mapping (output index -> label): {0: 'fake', 1: 'real'}
 Starting DeepShield backend on http://127.0.0.1:5000  (health: /health, inference: POST /predict)
 ```
@@ -407,19 +416,20 @@ curl -N -F "file=@path/to/video.mp4" http://127.0.0.1:5000/predict
 python -m streamlit run streamlit_app.py
 ```
 
-Open http://localhost:8501. The sidebar shows *Backend Online*, the device, *Model Loaded: True* and the checkpoint path. Upload an image or video and click **Analyze Media**.
+Open http://localhost:8501. The top bar shows *Backend online*, *Model loaded*, the device and the served model; the sidebar shows the checkpoint path and threshold. Upload an image or video and click **Analyze media**.
 
 The frontend finds the backend through `DEEPSHIELD_BACKEND_URL` (default `http://127.0.0.1:5000`). If you change the backend `HOST`/`PORT`, update that variable too.
 
 ### API
 
-* `GET /health` → `{status, device, model_loaded, model_error, model_arch, model_path, class_names, max_upload_mb, model_url_set}`
-* `POST /predict` (multipart field `file`) → Server-Sent Events. Each `data:` line is
-  `{total_frames, real_count, fake_count, real_percentage, fake_percentage}`. The last event holds the final counts. Videos are sampled at ~2 frames per second; an image is one frame. Errors arrive as `{"error": ...}`.
+* `GET /health` → `{status, serve_model, threshold, device, model_loaded, model_error, model_arch, model_path, class_names, max_upload_mb, model_url_set}`
+* `POST /predict` (multipart field `file`) → Server-Sent Events, one JSON object per `data:` line. Errors arrive as `{"error": ...}` (with `"kind": "no_face"` when no face was found).
+  * `SERVE_MODEL=finetuned`: progress events `{"stage": "decoding"}`, `{"stage": "faces", "done", "of"}`, `{"stage": "scoring"}`, then `{"stage": "done", "model_kind": "finetuned", "score", "threshold", "label", "window_probs", "windows_fake", "mode", "evaluated", "frames_analyzed", "face_rate", "segment_seconds", "video_seconds", "thumbs"}`. `score` is the mean window P(fake), not a calibrated probability; `thumbs` are small JPEG data URLs of the face crops that were scored.
+  * `SERVE_MODEL=vit`: `{total_frames, real_count, fake_count, real_percentage, fake_percentage}` after every sampled frame (~2 per second); the last event holds the final counts.
 
 ### Docker (optional)
 
-`Dockerfile` builds the backend only and serves it with gunicorn on port 7860. It expects the checkpoint inside `backend/models/` at build time, or `MODEL_URL` at runtime.
+`Dockerfile` builds the backend only and serves it with gunicorn on port 7860. It copies only `backend/`, so it sets `SERVE_MODEL=vit` and serves the ViT baseline; it expects that checkpoint inside `backend/models/` at build time, or `MODEL_URL` at runtime. `space/` (the Hugging Face Space copy) is unchanged and serves the ViT baseline as before.
 
 ---
 
@@ -430,7 +440,9 @@ All settings are optional. Both `backend/app.py` and `streamlit_app.py` read `<r
 | Variable | Default | Used by |
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `5000` | backend |
-| `MODEL_PATH` | `backend/models/best_vit_model.pth` | backend |
+| `SERVE_MODEL` | `finetuned` (`vit` in the Docker image) | backend: which model `/predict` serves |
+| `FINETUNED_CHECKPOINT` | `results/ffpp_c23/e2e_finetune_aug-frame_final/seed0/checkpoints/best_trainable.pth` | backend (`SERVE_MODEL=finetuned`) |
+| `MODEL_PATH` | `backend/models/best_vit_model.pth` | backend (`SERVE_MODEL=vit`) |
 | `MODEL_URL`, `MODEL_SHA256` | unset | backend (download if `MODEL_PATH` missing) |
 | `CLASS_NAMES` | `fake,real` | backend (output index → label) |
 | `MAX_CONTENT_LENGTH_MB` | `100` | backend upload limit |
@@ -571,7 +583,7 @@ The hybrid notebook (`notebooks/`) is unchanged and still writes to
 
 ## Limitations
 
-* **The deployed app uses the ViT baseline, not the hybrid model.** The backend has no sequence-level inference path for `TemporalHybridModel`. Serving it would need a new endpoint and frame-sequence preprocessing.
+* **The local app serves the fine-tuned ResNet50 + ViT, not the full hybrid.** The full hybrid (FFT branch + BiLSTM) scored no better than the simpler model on every test set, so it is not served. The fine-tuned model reads only the middle ~10 seconds of a video and needs a visible face; its threshold transfers poorly to other datasets (on Celeb-DF it calls about half of the real videos fake). The Docker image and `space/` still serve the ViT baseline.
 * **Domain shift:** on 44 real and 44 fake DFDC videos (not part of training), the deployed ViT separates the classes only weakly (mean P(real) 0.67 on real vs 0.58 on fake videos). Treat predictions as an AI-assisted signal, not proof.
 * The ViT baseline numbers come from a frame-level split and may be inflated by leakage between frames of the same video.
 * No dataset, and no trained hybrid checkpoint, is shipped. The training notebooks cannot run until `data/FF_frames` exists.

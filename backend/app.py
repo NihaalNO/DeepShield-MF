@@ -71,9 +71,20 @@ PORT = get_env_int("PORT", 5000)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Create the model architecture using timm
-model = timm.create_model('vit_base_patch16_224', pretrained=False, num_classes=2)
-model = model.to(device)
+# Which model /predict serves (SERVE_MODEL):
+#   finetuned  the research pipeline's final video model: face crops, ResNet50 + ViT fine-tuned,
+#              8-frame windows, one video-level score (deepshield/serving.py; needs the repo's
+#              deepshield/, scripts/, assets/face_detector/ and the checkpoint under results/)
+#   vit        the original ViT-B/16 frame classifier with a majority vote over frames
+SERVE_MODEL = os.getenv("SERVE_MODEL", "finetuned").strip().lower()
+if SERVE_MODEL not in ("finetuned", "vit"):
+    raise SystemExit(f"SERVE_MODEL must be 'finetuned' or 'vit', got {SERVE_MODEL!r}")
+print(f"Serving model: {SERVE_MODEL}")
+
+model = None
+if SERVE_MODEL == "vit":
+    model = timm.create_model('vit_base_patch16_224', pretrained=False, num_classes=2)
+    model = model.to(device)
 
 
 def remove_module_prefix(state_dict):
@@ -154,8 +165,30 @@ def ensure_model_file():
 
 MODEL_LOADED = False
 MODEL_LOAD_ERROR = None
+detector = None  # deepshield.serving.FineTunedDetector when SERVE_MODEL=finetuned
+THRESHOLD = None
 
-if ensure_model_file():
+if SERVE_MODEL == "finetuned":
+    import sys
+    sys.path.insert(0, PROJECT_ROOT)
+    MODEL_PATH = os.path.abspath(os.getenv(
+        "FINETUNED_CHECKPOINT",
+        os.path.join(PROJECT_ROOT, "results", "ffpp_c23", "e2e_finetune_aug-frame_final", "seed0", "checkpoints",
+                     "best_trainable.pth")))
+    try:
+        from deepshield.serving import ARCH, FineTunedDetector, NoFaceError
+        MODEL_ARCH = ARCH
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(f"Checkpoint not found at {MODEL_PATH} (train it with scripts/finetune_e2e.py, "
+                                    "README Step 8, or set FINETUNED_CHECKPOINT)")
+        detector = FineTunedDetector(MODEL_PATH, device)
+        THRESHOLD = detector.threshold
+        MODEL_LOADED = True
+        print(f"Fine-tuned model loaded from {MODEL_PATH} (threshold {THRESHOLD:.4f})")
+    except Exception as exc:
+        MODEL_LOAD_ERROR = f"{type(exc).__name__}: {exc}"
+        print(f"ERROR: Could not load the fine-tuned model: {MODEL_LOAD_ERROR}")
+elif ensure_model_file():
     try:
         state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=True)
         if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
@@ -174,7 +207,8 @@ if not MODEL_LOADED:
     print("WARNING: No trained weights loaded - /predict will return HTTP 503.")
 print(f"Class mapping (output index -> label): {dict(enumerate(CLASS_NAMES))}")
 
-model.eval()
+if model is not None:
+    model.eval()
 
 # ImageNet normalization values (must match training transforms)
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -228,6 +262,24 @@ def predict():
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     }
+
+    if SERVE_MODEL == "finetuned":
+        def generate_finetuned():
+            try:
+                events = [detector.analyze_image(video_path)] if is_image else detector.analyze_video(video_path)
+                for event in events:
+                    yield f"data: {json.dumps(event)}\n\n"
+            except NoFaceError as exc:
+                yield f"data: {json.dumps({'error': str(exc), 'kind': 'no_face'})}\n\n"
+            except Exception as exc:
+                yield f"data: {json.dumps({'error': f'{type(exc).__name__}: {exc}'})}\n\n"
+            finally:
+                try:
+                    os.remove(video_path)
+                except OSError:
+                    pass
+
+        return Response(generate_finetuned(), mimetype="text/event-stream", headers=response_headers)
 
     if is_image:
         frame = cv2.imread(video_path)
@@ -324,6 +376,8 @@ def predict():
 def health():
     return jsonify({
         "status": "ok",
+        "serve_model": SERVE_MODEL,
+        "threshold": THRESHOLD,
         "device": str(device),
         "model_loaded": MODEL_LOADED,
         "model_error": MODEL_LOAD_ERROR,

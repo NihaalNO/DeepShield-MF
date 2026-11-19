@@ -253,6 +253,8 @@ def backend_health():
 
 health = backend_health()
 model_ready = health.get("online") and health.get("model_loaded")
+FINETUNED = health.get("serve_model", "vit") == "finetuned"
+SERVED_NAME = "ResNet50 + ViT, fine-tuned" if FINETUNED else str(health.get("model_arch") or "vit_base_patch16_224")
 
 # ============================================================
 # TOP BAR
@@ -269,7 +271,7 @@ if health.get("online"):
              pill(C["real"] if health.get("model_loaded") else C["warn"],
                   "Model loaded" if health.get("model_loaded") else "No model weights"),
              pill(C["muted"], "Device", str(health.get("device", "?"))),
-             pill(C["muted"], "Model", str(health.get("model_arch") or "vit_base_patch16_224"))]
+             pill(C["muted"], "Model", SERVED_NAME)]
 else:
     pills = [pill(C["fake"], "Backend offline", BACKEND_URL)]
 
@@ -293,7 +295,10 @@ with st.sidebar:
     if health.get("online"):
         st.caption("Checkpoint")
         st.code(str(health.get("model_path") or "-"), language=None)
-        st.caption(f"Class order: `{health.get('class_names')}` · upload limit `{health.get('max_upload_mb', 100)} MB`")
+        st.caption(f"Serving `{health.get('serve_model', 'vit')}` · class order `{health.get('class_names')}` · "
+                   f"upload limit `{health.get('max_upload_mb', 100)} MB`")
+        if health.get("threshold") is not None:
+            st.caption(f"Decision threshold `{health['threshold']:.4f}` (chosen on FF++ validation)")
         if health.get("model_error"):
             st.warning(health["model_error"])
     else:
@@ -336,9 +341,25 @@ def run_analysis(uploaded_file):
                 continue
             if "error" in data:
                 progress.empty()
-                st.error(f"Backend error: {data['error']}")
+                if data.get("kind") == "no_face":
+                    st.warning(data["error"] + " The fine-tuned model judges faces only.")
+                else:
+                    st.error(f"Backend error: {data['error']}")
                 return None
+            stage = data.get("stage")
+            if stage == "decoding":
+                progress.progress(20, text=f"Decoding {data['frames_wanted']} frames from the middle of the clip...")
+                continue
+            if stage == "faces":
+                progress.progress(20 + int(60 * data["done"] / data["of"]),
+                                  text=f"Tracking the face · {data['done']} of {data['of']} frames")
+                continue
+            if stage == "scoring":
+                progress.progress(88, text=f"Scoring {data['frames']} face crops in 8-frame windows...")
+                continue
             latest = data
+            if stage == "done":
+                continue
             timeline.append((data.get("total_frames", 0), data.get("fake_count", 0)))
             n = data.get("total_frames", 0)
             progress.progress(min(95, 15 + int(min(n, 120) / 120 * 80)),
@@ -363,8 +384,52 @@ def run_analysis(uploaded_file):
 
 
 def verdict_of(p):
-    fake = p.get("fake_percentage", 0) > p.get("real_percentage", 0)
+    if p.get("model_kind") == "finetuned":
+        fake = p.get("label") == "fake"
+    else:
+        fake = p.get("fake_percentage", 0) > p.get("real_percentage", 0)
     return ("fake", "Manipulation detected") if fake else ("real", "No manipulation detected")
+
+
+def score_pct(p):
+    """(score, threshold) on a 0-100 scale for either model."""
+    if p.get("model_kind") == "finetuned":
+        return 100 * p["score"], 100 * p["threshold"]
+    return p.get("fake_percentage", 0.0), 50.0
+
+
+def score_gauge(score, threshold, cls):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number", value=score,
+        number=dict(valueformat=".2f", font=dict(family=FONT, size=44, color=C["text"])),
+        title=dict(text=f"Video fake score · threshold {threshold:.2f}", font=dict(size=13, color=C["muted"])),
+        gauge=dict(
+            shape="angular", axis=dict(range=[0, 1], tickwidth=1, tickcolor=C["faint"], tickfont=dict(color=C["muted"]),
+                                        tickvals=[0, 0.25, 0.5, 0.75, 1]),
+            bar=dict(color=C["fake"] if cls == "fake" else C["real"], thickness=0.28),
+            bgcolor="rgba(0,0,0,0)", borderwidth=0,
+            steps=[dict(range=[0, threshold], color="rgba(242,242,242,0.05)"),
+                   dict(range=[threshold, 1], color="rgba(242,242,242,0.10)")],
+            threshold=dict(line=dict(color=C["text"], width=3), thickness=0.85, value=threshold),
+        )))
+    return style_fig(fig, 300)
+
+
+def window_chart(probs, threshold):
+    xs = [f"W{i + 1}" for i in range(len(probs))]
+    fig = go.Figure(go.Bar(
+        x=xs, y=probs, marker_color=[C["fake"] if v >= threshold else C["real"] for v in probs], marker_line_width=0,
+        text=[f"{v:.2f}" for v in probs], textposition="outside", cliponaxis=False,
+        textfont=dict(family=FONT, color=C["text"], size=12),
+        customdata=[f"frames {4 * i + 1}-{4 * i + 8}" for i in range(len(probs))],
+        hovertemplate="%{x} (%{customdata}): P(fake) %{y:.3f}<extra></extra>"))
+    fig.add_hline(y=threshold, line=dict(color=C["text"], width=1.5, dash="dot"))
+    fig.add_annotation(x=1, xref="paper", y=threshold, text="threshold", showarrow=False, xanchor="right", yshift=10,
+                       font=dict(size=12, color=C["muted"]))
+    fig.update_yaxes(range=[0, 1.12], tickvals=[0, 0.5, 1], title_text="P(fake)", title_font=dict(color=C["muted"], size=12))
+    fig.update_xaxes(title_text="8-frame windows along the face track (50% overlap)", title_font=dict(color=C["muted"], size=12))
+    fig.update_layout(bargap=0.3, title=dict(text="Window scores", font=dict(size=13, color=C["muted"]), x=0.01))
+    return style_fig(fig, 300)
 
 
 def gauge(fake_share, cls):
@@ -411,9 +476,10 @@ def frame_timeline(timeline):
 with tab_analyze:
     left, right = st.columns([5, 7], gap="large")
     with left:
+        how = ("The model tracks the face through 32 frames from the middle of the video and scores it as a whole."
+               if FINETUNED else "Videos are sampled at about two frames per second.")
         html(f'<div class="card"><div class="card-title">{icon("layers", 18)}Upload media</div>'
-             f'<p class="card-sub">Images (JPG, PNG, BMP, WebP) or videos (MP4, AVI, MOV, MKV). Videos are sampled at '
-             f'about two frames per second.</p></div>')
+             f'<p class="card-sub">Images (JPG, PNG, BMP, WebP) or videos (MP4, AVI, MOV, MKV). {how}</p></div>')
         uploaded = st.file_uploader("Image or video", type=["jpg", "jpeg", "png", "bmp", "webp", "mp4", "avi", "mov", "mkv"],
                                     accept_multiple_files=False, label_visibility="collapsed")
         if uploaded is not None:
@@ -446,7 +512,57 @@ with tab_analyze:
                  f'<div style="font-size:0.86rem">Drop a file on the left to preview it here.</div></div>')
 
     p = st.session_state.prediction
-    if p:
+    if p and p.get("model_kind") == "finetuned":
+        cls, headline = verdict_of(p)
+        score, thr = p["score"], p["threshold"]
+        side = "above" if score >= thr else "below"
+        section("Result", f"{p['file_name']} · analyzed at {p['time']}", "shield")
+        if p.get("mode") == "image":
+            detail = f"Score {score:.2f} is {side} the threshold {thr:.2f} · single image, face repeated as one window"
+        else:
+            detail = f"Score {score:.2f} is {side} the threshold {thr:.2f} · {p['windows_fake']} of {len(p['window_probs'])} windows above it"
+        html(f"""
+        <div class="verdict {cls}">
+          <div class="badge">{icon("alert" if cls == "fake" else "check", 30)}</div>
+          <div><div class="eyebrow">Verdict · fine-tuned ResNet50 + ViT</div><div class="headline">{headline}</div>
+               <div class="detail">{detail}</div></div>
+          <div class="score"><div class="num">{score:.2f}</div><div class="cap">video fake score</div></div>
+        </div>""")
+        st.write("")
+        if p.get("mode") == "video":
+            a, b = p["segment_seconds"]
+            face_foot = f"of {p['frames_analyzed']} frames, {a:.1f}&ndash;{b:.1f} s of {p['video_seconds']:.1f} s"
+        else:
+            face_foot = "one still image"
+        kpi_row([
+            dict(label="Video fake score", value=f"{score:.3f}", foot="mean P(fake) over the windows",
+                 accent=C["fake"] if cls == "fake" else C["real"]),
+            dict(label="Threshold", value=f"{thr:.3f}", foot="chosen on FF++ validation, then frozen"),
+            dict(label="Windows above threshold", value=f"{p['windows_fake']}", unit=f"/{len(p['window_probs'])}",
+                 foot="8-frame windows, 50% overlap"),
+            dict(label="Face found", value=f"{100 * p['face_rate']:.0f}", unit="%", foot=face_foot),
+        ])
+        g, t = st.columns([4, 7], gap="medium")
+        with g:
+            st.plotly_chart(score_gauge(score, thr, cls), width="stretch", config=PLOT_CONFIG)
+        with t:
+            if p.get("mode") == "video":
+                st.plotly_chart(window_chart(p["window_probs"], thr), width="stretch", config=PLOT_CONFIG)
+            else:
+                html(f'<div class="empty" style="margin-top:30px">{icon("image", 30)}<div style="font-weight:600;color:{C["text"]}">'
+                     f'Single image</div><div style="font-size:16px">The model reads 8-frame windows; a still is one window '
+                     f'of the same face, a case it was never tested on.</div></div>')
+        thumbs = "".join(f'<img src="{u}" alt="Face crop {i + 1}" style="width:100%;border-radius:8px;display:block">'
+                         for i, u in enumerate(p.get("thumbs", [])))
+        cols = max(1, len(p.get("thumbs", [])))
+        html(f'<div class="card" style="margin-top:8px"><div class="card-title">Face crops the model scored</div>'
+             f'<div style="display:grid;grid-template-columns:repeat({8 if cols > 1 else 1},minmax(0,{96 if cols == 1 else 999}px));'
+             f'gap:10px;margin-top:8px">{thumbs}</div></div>')
+        note("The score is the model's mean P(fake) over 8-frame windows of the tracked face. It is not a calibrated "
+             "probability. On the FaceForensics++ test split this model reached 0.853 AUC; on Celeb-DF, which it never "
+             "saw, 0.781, and there its threshold called about half of the real videos fake. Treat a verdict as a signal, "
+             "not proof." + (" Stills were never part of its evaluation." if p.get("mode") == "image" else ""))
+    elif p:
         cls, headline = verdict_of(p)
         fake_share = p.get("fake_percentage", 0.0)
         n, nf, nr = p.get("total_frames", 0), p.get("fake_count", 0), p.get("real_count", 0)
@@ -492,28 +608,33 @@ with tab_history:
         kpi_row([
             dict(label="Analyses this session", value=str(len(hist)), foot="most recent first"),
             dict(label="Flagged as manipulated", value=str(n_fake), foot=f"{len(hist) - n_fake} judged real", accent=C["fake"]),
-            dict(label="Frames analyzed", value=str(sum(h.get("total_frames", 0) for h in hist)), foot="across all uploads"),
+            dict(label="Frames analyzed", value=str(sum(h.get("frames_analyzed", h.get("total_frames", 0)) for h in hist)),
+                 foot="across all uploads"),
         ])
         st.write("")
         df = pd.DataFrame([{
-            "Time": h["time"], "File": h["file_name"], "Type": h["kind"], "Frames": h.get("total_frames", 0),
-            "Fake share (%)": round(h.get("fake_percentage", 0.0), 1),
+            "Time": h["time"], "File": h["file_name"], "Type": h["kind"],
+            "Model": "Fine-tuned" if h.get("model_kind") == "finetuned" else "ViT vote",
+            "Frames": h.get("frames_analyzed", h.get("total_frames", 0)),
+            "Fake score (%)": round(score_pct(h)[0], 1),
             "Verdict": "Manipulated" if verdict_of(h)[0] == "fake" else "Real"} for h in hist])
         c1, c2 = st.columns([7, 5], gap="medium")
         with c1:
             st.dataframe(df, width="stretch", hide_index=True, column_config={
-                "Fake share (%)": st.column_config.ProgressColumn("Fake share", min_value=0, max_value=100, format="%.1f%%")})
+                "Fake score (%)": st.column_config.ProgressColumn("Fake score", min_value=0, max_value=100, format="%.1f%%")})
         with c2:
             fig = go.Figure(go.Bar(
                 y=[f"{h['time']} · {h['file_name'][:22]}" for h in hist][::-1],
-                x=[h.get("fake_percentage", 0.0) for h in hist][::-1], orientation="h",
+                x=[score_pct(h)[0] for h in hist][::-1], orientation="h",
                 marker_color=[C["fake"] if verdict_of(h)[0] == "fake" else C["real"] for h in hist][::-1],
-                text=[f"{h.get('fake_percentage', 0.0):.1f}%" for h in hist][::-1], textposition="outside", cliponaxis=False,
+                text=[f"{score_pct(h)[0]:.1f}%" for h in hist][::-1], textposition="outside", cliponaxis=False,
                 width=0.5, textfont=dict(family=FONT, color=C["text"], size=12),
                 hovertemplate="%{y}: %{x:.1f}% fake<extra></extra>"))
-            fig.add_vline(x=50, line=dict(color=C["faint"], dash="dot"))
+            thresholds = {round(score_pct(h)[1], 2) for h in hist}
+            if len(thresholds) == 1:
+                fig.add_vline(x=thresholds.pop(), line=dict(color=C["faint"], dash="dot"))
             fig.update_xaxes(range=[0, 118], tickvals=[0, 50, 100], ticksuffix="%")
-            fig.update_layout(title=dict(text="Fake-frame share per upload", font=dict(size=13, color=C["muted"]), x=0.01))
+            fig.update_layout(title=dict(text="Fake score per upload", font=dict(size=13, color=C["muted"]), x=0.01))
             st.plotly_chart(style_fig(fig, max(200, 90 + 36 * len(hist))), width="stretch", config=PLOT_CONFIG)
         if st.button("Clear history"):
             st.session_state.history = []
@@ -578,9 +699,13 @@ with tab_research:
              f'<div style="font-size:0.86rem">Expected files under <code>{RESULTS_DIR}</code>. Run the pipeline in the README '
              f'(Steps 1 to 8) to produce them.</div></div>')
     else:
-        note("These are offline evaluations of the <b>research pipeline</b> (video level, face crops, source-family-disjoint "
-             "splits, each test set scored once). They are <b>not</b> results of the ViT frame classifier served on the "
-             "Analyze tab.", "warn")
+        if FINETUNED:
+            note("Offline evaluation of the <b>research pipeline</b> (video level, face crops, source-family-disjoint splits, "
+                 "each test set scored once). The <b>fine-tuned ResNet50 + ViT</b> below is the model the Analyze tab serves.")
+        else:
+            note("These are offline evaluations of the <b>research pipeline</b> (video level, face crops, source-family-disjoint "
+                 "splits, each test set scored once). They are <b>not</b> results of the ViT frame classifier served on the "
+                 "Analyze tab.", "warn")
         F = R["final"]
 
         def tile(ds, label):
@@ -697,26 +822,30 @@ with tab_research:
 # ============================================================
 with tab_about:
     a1, a2 = st.columns(2, gap="medium")
+    vit_card = ("ViT frame classifier", "Whole frames, no face crop. Trained on a random frame split, so its reported 88% "
+                "frame accuracy is not a held-out estimate.",
+                '<span class="step">Upload</span><span class="arrow">&rarr;</span><span class="step">~2 frames/s</span>'
+                '<span class="arrow">&rarr;</span><span class="step">ViT-B/16 per frame</span><span class="arrow">&rarr;</span>'
+                '<span class="step">Majority vote</span>')
+    ft_card = ("Fine-tuned ResNet50 + ViT", "The research pipeline's final model: 0.853 AUC on the FF++ test split, 0.781 on "
+               "Celeb-DF v2. Only the middle 32 frames of a video are read, so a manipulated passage elsewhere is missed.",
+               '<span class="step">YuNet face track</span><span class="arrow">&rarr;</span><span class="step">32 frames</span>'
+               '<span class="arrow">&rarr;</span><span class="step">ResNet50 + ViT</span><span class="arrow">&rarr;</span>'
+               '<span class="step">8-frame windows</span><span class="arrow">&rarr;</span><span class="step">Video score</span>')
+    served, other = (ft_card, vit_card) if FINETUNED else (vit_card, ft_card)
     with a1:
         html(f"""<div class="card">
-          <div class="card-title">{icon("server", 18)}Served by this console
-            <span class="badge-tag">Live</span></div>
-          <p class="card-sub">Frame classifier behind <code>/predict</code> on the Flask backend.</p>
-          <div class="flow"><span class="step">Upload</span><span class="arrow">&rarr;</span><span class="step">~2 frames/s</span>
-            <span class="arrow">&rarr;</span><span class="step">ViT-B/16 per frame</span><span class="arrow">&rarr;</span>
-            <span class="step">Majority vote</span></div>
-          <p class="card-sub" style="margin-top:10px">Whole frames, no face crop. Trained on a random frame split, so its
-          reported 88% frame accuracy is not a held-out estimate.</p></div>""")
+          <div class="card-title">{icon("server", 18)}Served: {served[0]}<span class="badge-tag">Live</span></div>
+          <p class="card-sub">Behind <code>/predict</code> on the Flask backend.</p>
+          <div class="flow">{served[2]}</div>
+          <p class="card-sub" style="margin-top:10px">{served[1]}</p></div>""")
     with a2:
         html(f"""<div class="card">
-          <div class="card-title">{icon("layers", 18)}Research pipeline
-            <span class="badge-tag">Offline</span></div>
-          <p class="card-sub">Scripts in <code>scripts/</code>, evaluated on FF++ c23 and Celeb-DF.</p>
-          <div class="flow"><span class="step">YuNet face crop</span><span class="arrow">&rarr;</span><span class="step">32 frames</span>
-            <span class="arrow">&rarr;</span><span class="step">ResNet50 + ViT</span><span class="arrow">&rarr;</span>
-            <span class="step">8-frame windows</span><span class="arrow">&rarr;</span><span class="step">Video score</span></div>
-          <p class="card-sub" style="margin-top:10px">Not yet served here: it needs a face-crop and sequence inference path
-          in the backend.</p></div>""")
+          <div class="card-title">{icon("layers", 18)}Also available: {other[0]}<span class="badge-tag">Off</span></div>
+          <p class="card-sub">Switch with <code>SERVE_MODEL={'vit' if FINETUNED else 'finetuned'}</code> in <code>.env</code>
+          and restart the backend.</p>
+          <div class="flow">{other[2]}</div>
+          <p class="card-sub" style="margin-top:10px">{other[1]}</p></div>""")
     section("What the research found", "details in the README and docs/", "info")
     html(f"""<div class="card"><ul class="findings">
       <li>Fine-tuning the last backbone layers is the change that matters: 0.853 test AUC vs 0.752 with frozen features.</li>
