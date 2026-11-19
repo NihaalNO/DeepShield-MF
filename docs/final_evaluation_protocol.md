@@ -48,3 +48,26 @@ No Celeb-DF video has been used for training, selection, thresholds or calibrati
 
 All results are reported, including unfavourable ones. Cross-dataset thresholds are expected to transfer
 badly; that is reported, not corrected.
+
+## Amendment: second-domain model (written 19 November 2026, before it was trained)
+
+**Why.** Served on uploads, the final model called most real Celeb-DF interviews fake (on the Celeb-DF v2
+test list it put 45 % of the real videos above its threshold, and 60 % of 25 Celeb-real videos outside
+the list). The serving code reproduces the evaluation exactly, so the cause is the training data: its
+only real videos are 720 FaceForensics++ news clips.
+
+**Model `final_cdf`.** The same recipe as `final` (`scripts/finetune_e2e.py --mode finetune --aug frame`,
+all 360 FF++ training families, seed 0, up to 8 epochs, patience 3), plus `--extra-dataset
+celebdf_v2_train`: Celeb-DF v2 videos outside the v1 and v2 official test lists
+(`manifests/celebdf_v2_train.csv`), split by identity (6 validation celebrities, no identity shared
+between train and validation), all reals kept, fakes subsampled to 1,500 (train) and 300 (validation).
+Model selection and the threshold use the combined validation set (FF++ val + Celeb-DF val).
+
+**Which model the app serves** is decided on validation only, before any test score: `final_cdf`
+replaces `final` if its Celeb-DF validation specificity at its own threshold is higher than `final`'s
+on the same videos, and its FF++ validation AUC is at most 0.02 below `final`'s (0.867).
+
+**Evaluation.** Scored once, like `final`, on the FF++ test split and both Celeb-DF test lists.
+After this fine-tuning the Celeb-DF scores are **same-dataset** results: the test videos are unseen, but
+54 of the 59 test celebrities also appear in training. No unseen-dataset score exists for `final_cdf`;
+that would need a third dataset. The earlier results of `final`, `C` and `F` stay as they are.

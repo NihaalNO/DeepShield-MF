@@ -173,7 +173,7 @@ if SERVE_MODEL == "finetuned":
     sys.path.insert(0, PROJECT_ROOT)
     MODEL_PATH = os.path.abspath(os.getenv(
         "FINETUNED_CHECKPOINT",
-        os.path.join(PROJECT_ROOT, "results", "ffpp_c23", "e2e_finetune_aug-frame_final", "seed0", "checkpoints",
+        os.path.join(PROJECT_ROOT, "results", "ffpp_c23", "e2e_finetune_aug-frame_ffpp+celebdf", "seed0", "checkpoints",
                      "best_trainable.pth")))
     try:
         from deepshield.serving import ARCH, FineTunedDetector, NoFaceError

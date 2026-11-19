@@ -559,9 +559,10 @@ with tab_analyze:
              f'<div style="display:grid;grid-template-columns:repeat({8 if cols > 1 else 1},minmax(0,{96 if cols == 1 else 999}px));'
              f'gap:10px;margin-top:8px">{thumbs}</div></div>')
         note("The score is the model's mean P(fake) over 8-frame windows of the tracked face. It is not a calibrated "
-             "probability. On the FaceForensics++ test split this model reached 0.853 AUC; on Celeb-DF, which it never "
-             "saw, 0.781, and there its threshold called about half of the real videos fake. Treat a verdict as a signal, "
-             "not proof." + (" Stills were never part of its evaluation." if p.get("mode") == "image" else ""))
+             "probability. Trained on FaceForensics++ and Celeb-DF, it reached 0.874 AUC on the FF++ test split and 0.956 on "
+             "the Celeb-DF v2 test list, but it still calls about 1 in 5 held-out real Celeb-DF videos and 3 in 10 real FF++ "
+             "videos fake, and it has not been tested on any third source. Treat a verdict as a signal, not proof."
+             + (" Stills were never part of its evaluation." if p.get("mode") == "image" else ""))
     elif p:
         cls, headline = verdict_of(p)
         fake_share = p.get("fake_percentage", 0.0)
@@ -645,8 +646,8 @@ with tab_history:
 # RESEARCH RESULTS (read from results/ written by the research scripts)
 # ============================================================
 DATASETS = [("ffpp_test", "FF++ c23 test"), ("celebdf_v1", "Celeb-DF v1"), ("celebdf_v2", "Celeb-DF v2")]
-MODELS = [("final", "Fine-tuned ResNet50+ViT", C["accent"]), ("C", "C: ResNet50+ViT, frozen", C["series2"]),
-          ("F", "F: full hybrid, frozen", C["series3"])]
+MODELS = [("final_cdf", "Fine-tuned, FF++ + Celeb-DF (served)", C["accent"]), ("final", "Fine-tuned, FF++ only", C["series2"]),
+          ("C", "C: ResNet50+ViT, frozen", C["series3"]), ("F", "F: full hybrid, frozen", C["faint"])]
 
 
 def _read_json(path):
@@ -662,7 +663,7 @@ def load_research(results_dir: str):
     final = {}
     for ds, _ in DATASETS:
         for key, _, _ in MODELS:
-            files = [root / "final" / ds / "final.json"] if key == "final" else \
+            files = [root / "final" / ds / f"{key}.json"] if key.startswith("final") else \
                     [root / "final" / ds / f"{key}_seed{s}.json" for s in range(3)]
             reps = [r for r in (_read_json(f) for f in files) if r]
             if reps:
@@ -700,8 +701,9 @@ with tab_research:
              f'(Steps 1 to 8) to produce them.</div></div>')
     else:
         if FINETUNED:
-            note("Offline evaluation of the <b>research pipeline</b> (video level, face crops, source-family-disjoint splits, "
-                 "each test set scored once). The <b>fine-tuned ResNet50 + ViT</b> below is the model the Analyze tab serves.")
+            note("Offline evaluation of the <b>research pipeline</b> (video level, face crops, held-out test sets, each scored "
+                 "once). The Analyze tab serves the model trained on <b>FF++ + Celeb-DF v2</b>; its Celeb-DF scores are "
+                 "same-dataset results (unseen videos, but celebrities it also saw in training).")
         else:
             note("These are offline evaluations of the <b>research pipeline</b> (video level, face crops, source-family-disjoint "
                  "splits, each test set scored once). They are <b>not</b> results of the ViT frame classifier served on the "
@@ -709,17 +711,17 @@ with tab_research:
         F = R["final"]
 
         def tile(ds, label):
-            fin, base = F.get((ds, "final")), F.get((ds, "C"))
+            fin, base = F.get((ds, "final_cdf")), F.get((ds, "final"))
             if not fin:
                 return dict(label=label, value="-", foot="not evaluated")
             r = fin[0]
             ci = r.get("ci95_family_bootstrap", {}).get("roc_auc", [None, None])
-            delta = f'<br><span class="delta">+{r["roc_auc"] - mean_of(base, "roc_auc"):.3f}</span> over frozen features' if base else ""
+            delta = f'<br><span class="delta">{r["roc_auc"] - mean_of(base, "roc_auc"):+.3f}</span> vs FF++-only model' if base else ""
             return dict(label=f"{label} · AUC", value=f"{r['roc_auc']:.3f}",
                         foot=f"95% CI {ci[0]:.3f}&ndash;{ci[1]:.3f}{delta}")
 
-        section("Final model on held-out data", "fine-tuned ResNet50 + ViT, per-frame augmentation", "shield")
-        ff = F.get(("ffpp_test", "final"), [{}])[0]
+        section("Served model on held-out data", "fine-tuned ResNet50 + ViT, trained on FF++ + Celeb-DF v2", "shield")
+        ff = F.get(("ffpp_test", "final_cdf"), [{}])[0]
         kpi_row([tile("ffpp_test", "FF++ test"), tile("celebdf_v1", "Celeb-DF v1"), tile("celebdf_v2", "Celeb-DF v2"),
                  dict(label="FF++ test · balanced acc", value=f"{ff.get('balanced_accuracy', 0):.3f}",
                       foot=f"fake recall {ff.get('fake_recall', 0):.3f}<br>specificity {ff.get('specificity', 0):.3f}")])
@@ -736,7 +738,7 @@ with tab_research:
                     xs.append(dlabel)
                     m = mean_of(reps, "roc_auc")
                     ys.append(m)
-                    if key == "final":
+                    if key.startswith("final"):
                         lo, hi = reps[0]["ci95_family_bootstrap"]["roc_auc"]
                         err_lo.append(m - lo)
                         err_hi.append(hi - m)
@@ -790,7 +792,7 @@ with tab_research:
         with c4:
             meths = ["Deepfakes", "Face2Face", "FaceShifter", "FaceSwap", "NeuralTextures"]
             fig = go.Figure()
-            for key, name, color in MODELS[:2][::-1]:
+            for key, name, color in MODELS[:3][::-1]:
                 reps = F.get(("ffpp_test", key))
                 if reps:
                     vals = [st_stats.mean(r["per_method"][m]["roc_auc"] for r in reps) for m in meths]
@@ -827,8 +829,9 @@ with tab_about:
                 '<span class="step">Upload</span><span class="arrow">&rarr;</span><span class="step">~2 frames/s</span>'
                 '<span class="arrow">&rarr;</span><span class="step">ViT-B/16 per frame</span><span class="arrow">&rarr;</span>'
                 '<span class="step">Majority vote</span>')
-    ft_card = ("Fine-tuned ResNet50 + ViT", "The research pipeline's final model: 0.853 AUC on the FF++ test split, 0.781 on "
-               "Celeb-DF v2. Only the middle 32 frames of a video are read, so a manipulated passage elsewhere is missed.",
+    ft_card = ("Fine-tuned ResNet50 + ViT", "Trained on FF++ and Celeb-DF v2: 0.874 AUC on the FF++ test split and 0.956 on "
+               "the Celeb-DF v2 test list (unseen videos of a dataset it trained on). Only the middle 32 frames of a video "
+               "are read, so a manipulated passage elsewhere is missed.",
                '<span class="step">YuNet face track</span><span class="arrow">&rarr;</span><span class="step">32 frames</span>'
                '<span class="arrow">&rarr;</span><span class="step">ResNet50 + ViT</span><span class="arrow">&rarr;</span>'
                '<span class="step">8-frame windows</span><span class="arrow">&rarr;</span><span class="step">Video score</span>')

@@ -8,11 +8,11 @@ The repository contains these model tracks:
 
 | Track | What it is | Where it lives | Served by the app? |
 | --- | --- | --- | --- |
-| **Fine-tuned ResNet50 + ViT** | Video-level model on face crops: ResNet50 and ViT-B/16 with their last layers fine-tuned, scored over 8-frame windows | `scripts/finetune_e2e.py` → `results/ffpp_c23/e2e_finetune_aug-frame_final/` | **Yes, by default** (`SERVE_MODEL=finetuned`) |
+| **Fine-tuned ResNet50 + ViT** | Video-level model on face crops: ResNet50 and ViT-B/16 with their last layers fine-tuned, scored over 8-frame windows | `scripts/finetune_e2e.py` → `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/` (trained on FF++ + Celeb-DF v2; the FF++-only `e2e_finetune_aug-frame_final/` is kept) | **Yes, by default** (`SERVE_MODEL=finetuned`) |
 | **ViT baseline** | Frame-level ViT-B/16 classifier | `notebooks/DD_ViT_Final.ipynb` → `backend/models/best_vit_model.pth` | With `SERVE_MODEL=vit`, and in the Docker image |
 | **Hybrid research model** | Video-level ResNet50 + ViT-B/16 + FFT + BiLSTM | `notebooks/frac_df_cnnvit_fft_temporal.ipynb`, `scripts/` (row F) | No; evaluated by the research scripts only |
 
-> The local app (Flask + Streamlit) serves the **fine-tuned ResNet50 + ViT**, the final model of the research pipeline (0.853 AUC on the FF++ test split; see [Results](#results)). The ViT baseline remains available with `SERVE_MODEL=vit`.
+> The local app (Flask + Streamlit) serves the **fine-tuned ResNet50 + ViT trained on FF++ + Celeb-DF v2** (0.874 AUC on the FF++ test split, 0.956 on the Celeb-DF v2 test list; see [Results](#results)). The ViT baseline remains available with `SERVE_MODEL=vit`.
 
 ---
 
@@ -280,7 +280,27 @@ python scripts/final_eval.py
 
 `final_eval.py` scores the models fixed in `docs/final_evaluation_protocol.md` on the FF++ test split and the Celeb-DF v1/v2 test lists with their frozen validation thresholds. It writes `results/final/<dataset>/<model>.json` and `results/final/final_table.md`, and never overwrites an existing result.
 
-**Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). Only the official test lists are used, and only for the final evaluation: the project never trains, selects models or sets thresholds on Celeb-DF.
+**Step 9: second-domain fine-tuning (FF++ + Celeb-DF v2).** The FF++-only model called many real Celeb-DF videos fake: its only real training videos are 720 FF++ news clips. This step adds Celeb-DF v2 videos that are in neither official test list:
+
+```bash
+python scripts/build_manifest_celebdf_train.py
+```
+
+```bash
+python scripts/extract_faces.py --dataset celebdf_v2_train
+```
+
+```bash
+python scripts/finetune_e2e.py --mode finetune --aug frame --train-families 360 --extra-dataset celebdf_v2_train --name e2e_finetune_aug-frame_ffpp+celebdf
+```
+
+```bash
+python scripts/final_eval.py --models final_cdf
+```
+
+The manifest (`manifests/celebdf_v2_train.csv`) excludes every video of the v1 and v2 test lists (v1 is a byte-identical subset of v2), keeps all reals, subsamples fakes (1,500 train, 300 validation), and puts 6 celebrities in validation only. Model selection and the threshold use FF++ val + Celeb-DF val. The rule for serving it was written in `docs/final_evaluation_protocol.md` before training. After this step the Celeb-DF test lists are same-dataset tests: unseen videos, but 54 of 59 test celebrities also appear in training.
+
+**Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). The official test lists are used only for the final evaluation; the FF++-only models never trained, selected or set thresholds on Celeb-DF. Step 9 trains on other Celeb-DF v2 videos.
 
 ```bash
 python scripts/build_manifest_celebdf.py --version v2
@@ -378,12 +398,12 @@ Model weights are git-ignored. The original README states that the ViT checkpoin
 
 Prerequisites: setup done, and the checkpoint of the served model present:
 
-* `SERVE_MODEL=finetuned` (default): `results/ffpp_c23/e2e_finetune_aug-frame_final/seed0/checkpoints/best_trainable.pth`, written by README Step 8 (`scripts/finetune_e2e.py`). It holds only the fine-tuned layers; the rest of ResNet50 and ViT-B/16 comes from the `timm` pretrained weights (downloaded once, then cached). It also needs `deepshield/`, `scripts/` and the face detector in `assets/face_detector/`.
+* `SERVE_MODEL=finetuned` (default): `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/seed0/checkpoints/best_trainable.pth`, written by README Step 9 (`scripts/finetune_e2e.py`); set `FINETUNED_CHECKPOINT` to `results/ffpp_c23/e2e_finetune_aug-frame_final/seed0/checkpoints/best_trainable.pth` for the FF++-only model of Step 8. It holds only the fine-tuned layers; the rest of ResNet50 and ViT-B/16 comes from the `timm` pretrained weights (downloaded once, then cached). It also needs `deepshield/`, `scripts/` and the face detector in `assets/face_detector/`.
 * `SERVE_MODEL=vit`: `backend/models/best_vit_model.pth`.
 
 Without the checkpoint the backend still starts, but `/health` reports `model_loaded: false` and `/predict` returns HTTP 503 instead of guessing with untrained weights.
 
-**What the fine-tuned model does with an upload.** Exactly what it was evaluated with: 32 frames at a constant stride (every 8th frame, fewer for short clips) from the middle of the video, a YuNet face track, square crops of 1.3x the face, 7 windows of 8 frames, and the mean window P(fake) as the video score. The video is fake if the score reaches the threshold chosen on the FF++ validation split (0.653). A video with a face in fewer than half of those frames is refused, and so is an image without a face. Only about 10 seconds from the middle of a video are read. A still image is scored as one window of the same face repeated, which the model was never evaluated on. On the GPU a video takes about 1 second.
+**What the fine-tuned model does with an upload.** Exactly what it was evaluated with: 32 frames at a constant stride (every 8th frame, fewer for short clips) from the middle of the video, a YuNet face track, square crops of 1.3x the face, 7 windows of 8 frames, and the mean window P(fake) as the video score. The video is fake if the score reaches the threshold chosen on validation (0.816 for the served model, chosen on FF++ val + Celeb-DF val). A video with a face in fewer than half of those frames is refused, and so is an image without a face. Only about 10 seconds from the middle of a video are read. A still image is scored as one window of the same face repeated, which the model was never evaluated on. On the GPU a video takes about 1 second.
 
 Optional: `copy .env.example .env` (Windows) or `cp .env.example .env` and edit. The defaults work without a `.env`.
 
@@ -398,7 +418,7 @@ Expected log lines:
 ```text
 Using device: cuda
 Serving model: finetuned
-Fine-tuned model loaded from ...\results\ffpp_c23\e2e_finetune_aug-frame_final\seed0\checkpoints\best_trainable.pth (threshold 0.6530)
+Fine-tuned model loaded from ...\results\ffpp_c23\e2e_finetune_aug-frame_ffpp+celebdf\seed0\checkpoints\best_trainable.pth (threshold 0.8161)
 Class mapping (output index -> label): {0: 'fake', 1: 'real'}
 Starting DeepShield backend on http://127.0.0.1:5000  (health: /health, inference: POST /predict)
 ```
@@ -441,7 +461,7 @@ All settings are optional. Both `backend/app.py` and `streamlit_app.py` read `<r
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `5000` | backend |
 | `SERVE_MODEL` | `finetuned` (`vit` in the Docker image) | backend: which model `/predict` serves |
-| `FINETUNED_CHECKPOINT` | `results/ffpp_c23/e2e_finetune_aug-frame_final/seed0/checkpoints/best_trainable.pth` | backend (`SERVE_MODEL=finetuned`) |
+| `FINETUNED_CHECKPOINT` | `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/seed0/checkpoints/best_trainable.pth` | backend (`SERVE_MODEL=finetuned`) |
 | `MODEL_PATH` | `backend/models/best_vit_model.pth` | backend (`SERVE_MODEL=vit`) |
 | `MODEL_URL`, `MODEL_SHA256` | unset | backend (download if `MODEL_PATH` missing) |
 | `CLASS_NAMES` | `fake,real` | backend (output index → label) |
@@ -527,7 +547,19 @@ split and Celeb-DF were each scored once, under the protocol in
 [`docs/final_evaluation_protocol.md`](docs/final_evaluation_protocol.md), written before any test score
 existed.
 
-**Final evaluation** (`scripts/final_eval.py`; thresholds frozen from FF++ validation):
+**Second-domain model** (README Step 9, served by the app; scored once like the others):
+
+| Data | FF++-only model | FF++ + Celeb-DF v2 model |
+| --- | ---: | ---: |
+| FF++ test AUC | 0.853 | **0.874** (0.851–0.899) |
+| Celeb-DF v1 test AUC | 0.837 (unseen dataset) | **0.980** (0.949–0.998), same dataset |
+| Celeb-DF v2 test AUC | 0.781 (unseen dataset) | **0.956** (0.938–0.973), same dataset |
+| Real Celeb-real test videos called fake | 50% | 21% |
+| Real FF++ test videos called fake | 19% | 31% |
+
+The second model's threshold (0.816) was chosen on FF++ val + Celeb-DF val. It ranks better everywhere, but at that threshold it trades FF++ specificity (0.807 to 0.693) for Celeb-DF specificity (0.554 to 0.825). Its Celeb-DF numbers are same-dataset results, so it has no unseen-dataset score.
+
+**Final evaluation, FF++-only models** (`scripts/final_eval.py`; thresholds frozen from FF++ validation):
 
 | Data | Model | AUC | Balanced acc | Fake recall | Specificity |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -583,14 +615,14 @@ The hybrid notebook (`notebooks/`) is unchanged and still writes to
 
 ## Limitations
 
-* **The local app serves the fine-tuned ResNet50 + ViT, not the full hybrid.** The full hybrid (FFT branch + BiLSTM) scored no better than the simpler model on every test set, so it is not served. The fine-tuned model reads only the middle ~10 seconds of a video and needs a visible face; its threshold transfers poorly to other datasets (on Celeb-DF it calls about half of the real videos fake). The Docker image and `space/` still serve the ViT baseline.
+* **The local app serves the fine-tuned ResNet50 + ViT trained on FF++ + Celeb-DF v2, not the full hybrid.** The full hybrid (FFT branch + BiLSTM) scored no better than the simpler model on every test set, so it is not served. The served model reads only the middle ~10 seconds of a video and needs a visible face. On held-out test videos it still calls 21% of real Celeb-real interviews and 31% of real FF++ videos fake (the FF++-only model: 50% and 19%). It has not been tested on any dataset outside its training sources, so its behaviour on other video sources is unknown. The Docker image and `space/` still serve the ViT baseline.
 * **Domain shift:** on 44 real and 44 fake DFDC videos (not part of training), the deployed ViT separates the classes only weakly (mean P(real) 0.67 on real vs 0.58 on fake videos). Treat predictions as an AI-assisted signal, not proof.
 * The ViT baseline numbers come from a frame-level split and may be inflated by leakage between frames of the same video.
 * No dataset, and no trained hybrid checkpoint, is shipped. The training notebooks cannot run until `data/FF_frames` exists.
 * `deepfake_detection_vit_best.ipynb` is an archived Colab experiment and does not run as-is.
 * The Flask development server (`python backend/app.py`) is for local use. Use gunicorn/Docker (Linux) for anything public.
 * Model performance also varies with resolution, compression, lighting, face quality and unseen manipulation methods.
-* Research pipeline: the final fine-tuned model is a single training run (one seed); its test and Celeb-DF numbers carry the bootstrap CIs shown, not seed variance. Its checkpoint (`results/ffpp_c23/e2e_finetune_aug-frame_final/`) is local only and is not used by the app. Celeb-DF v1 has only 100 test videos, so its CI is wide.
+* Research pipeline: each fine-tuned model is a single training run (one seed); its test numbers carry the bootstrap CIs shown, not seed variance. The checkpoints under `results/ffpp_c23/` are local only (git-ignored). Celeb-DF v1 has only 100 test videos, so its CI is wide.
 
 ---
 

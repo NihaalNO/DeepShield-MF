@@ -1,4 +1,4 @@
-"""Serve the fine-tuned ResNet50 + ViT video model (the Phase 8 final model) on new uploads.
+"""Serve the fine-tuned ResNet50 + ViT video model on new uploads (default: the second-domain model).
 
 The pipeline is the one the model was trained and evaluated with, step for step:
 
@@ -34,7 +34,8 @@ from finetune_e2e import FRAMES, T, Net  # noqa: E402  (the trained model's defi
 from deepshield import paths  # noqa: E402
 from deepshield.data import window_starts  # noqa: E402
 
-DEFAULT_CHECKPOINT = ROOT / "results" / "ffpp_c23" / "e2e_finetune_aug-frame_final" / "seed0" / "checkpoints" / "best_trainable.pth"
+# served model: trained on FF++ + Celeb-DF v2 train (docs/final_evaluation_protocol.md, "Second-domain model")
+DEFAULT_CHECKPOINT = ROOT / "results" / "ffpp_c23" / "e2e_finetune_aug-frame_ffpp+celebdf" / "seed0" / "checkpoints" / "best_trainable.pth"
 # extract_faces.py defaults used for every training, validation and test crop
 MAX_STRIDE, MARGIN, MIN_DET_RATE, MIN_FRAMES, JPEG_QUALITY = 8, 1.3, 0.5, 8, 95
 ARCH = "ResNet50 + ViT-B/16, fine-tuned, mean over 8-frame windows"

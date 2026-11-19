@@ -14,7 +14,10 @@ Augmentations: horizontal flip, random crop (80-100 % of the side), brightness a
 
 Training uses the first --train-families source families of the train split (2 random windows
 per video and epoch); validation is the full validation split with the usual protocol (7 windows
-of 8 frames, mean P(fake), threshold chosen on validation). After training, the best epoch is
+of 8 frames, mean P(fake), threshold chosen on validation). --extra-dataset adds a second
+domain (e.g. celebdf_v2_train, README Step 9): its train split joins training and its val split
+joins validation, so model selection and the threshold use both domains; the AUC of each domain
+is logged per epoch. After training, the best epoch is
 also scored on degraded validation crops (see scripts/robustness.py) with its frozen threshold.
 
 Writes  results/ffpp_c23/<name>/seed<S>/{config.json, checkpoints/best_trainable.pth,
@@ -107,6 +110,25 @@ class Net(nn.Module):
         return {k: v for k, v in self.state_dict().items() if k in keep}
 
 
+def extra_rows(dataset):
+    """(train, val) rows of a second dataset from its manifest; only videos whose face crops exist."""
+    ds = paths.DATASETS[dataset]
+    faces = ds["data_dir"] / "faces"
+    train, val, missing = [], [], 0
+    for r in csv.DictReader(open(ds["manifest"], encoding="utf-8")):
+        if r["split"] not in ("train", "val"):
+            continue
+        if len(list((faces / r["video_id"]).glob("*.jpg"))) != FRAMES:
+            missing += 1  # no usable face track (extract_faces.py marked it failed)
+            continue
+        row = {"video_id": r["video_id"], "label_idx": int(r["label_idx"]), "method": r["method"],
+               "family_id": f"{dataset}:{r['family_id']}", "split": r["split"], "key": f"{dataset}:{r['video_id']}",
+               "dir": faces, "domain": dataset}
+        (train if r["split"] == "train" else val).append(row)
+    print(f"{dataset}: {len(train)} train and {len(val)} val videos ({missing} without a face track)", flush=True)
+    return train, val
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=["frozen", "finetune"], default="finetune")
@@ -121,6 +143,8 @@ def main():
     ap.add_argument("--lr-backbone", type=float, default=1e-5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name", default="")
+    ap.add_argument("--extra-dataset", choices=["celebdf_v2_train"], default=None,
+                    help="second training domain: its train split joins training, its val split joins validation")
     args = ap.parse_args()
 
     name = args.name or f"e2e_{args.mode}_aug-{args.aug}_fam{args.train_families}"
@@ -137,8 +161,17 @@ def main():
     if args.val_videos:
         val_rows = val_rows[:: max(1, len(val_rows) // args.val_videos)][: args.val_videos]
     fake_index = paths.CLASS_NAMES.index("fake")
+    for r in train_rows + val_rows:
+        r.update(key=r["video_id"], dir=paths.FFPP_FACES_DIR, domain="ffpp_c23")
+    if args.extra_dataset:
+        extra_train, extra_val = extra_rows(args.extra_dataset)
+        train_rows, val_rows = train_rows + extra_train, val_rows + extra_val
+    domains = np.array([r["domain"] for r in val_rows])
     y_val, methods_val, families_val = engine.rows_to_arrays(val_rows, fake_index)
-    files = {r["video_id"]: sorted((paths.FFPP_FACES_DIR / r["video_id"]).glob("*.jpg")) for r in train_rows + val_rows}
+    files = {r["key"]: sorted((r["dir"] / r["video_id"]).glob("*.jpg")) for r in train_rows + val_rows}
+    short = [k for k, v in files.items() if len(v) != FRAMES]
+    if short:
+        sys.exit(f"{len(short)} videos without {FRAMES} face crops, e.g. {short[:3]}")
     pool = ThreadPoolExecutor(12)
 
     def load_window(job):
@@ -171,7 +204,8 @@ def main():
               "tuned_modules": ["resnet50.layer4", "vit.blocks[-2:]", "vit.norm"] if model.tuned else [],
               "trainable_params": n_train, "train": {"videos": len(train_rows), "families": args.train_families,
                                                      "class_counts": dict(zip(paths.CLASS_NAMES, counts.tolist()))},
-              "val": {"videos": len(val_rows)}, "device": str(device), "torch": torch.__version__}
+              "val": {"videos": len(val_rows), "by_domain": {d: int((domains == d).sum()) for d in sorted(set(domains))}},
+              "extra_dataset": args.extra_dataset, "device": str(device), "torch": torch.__version__}
     (run_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     print(f"Run {name} seed {args.seed} | train {len(train_rows)} videos | val {len(val_rows)} videos | "
           f"trainable params {n_train:,} | device {device}", flush=True)
@@ -184,7 +218,7 @@ def main():
 
         def load_video(i):
             noise = np.random.default_rng(i)
-            imgs = [degrade(cv2.imread(str(f)), kind, level, noise)[:, :, ::-1] for f in files[val_rows[i]["video_id"]]]
+            imgs = [degrade(cv2.imread(str(f)), kind, level, noise)[:, :, ::-1] for f in files[val_rows[i]["key"]]]
             return np.stack(imgs)
 
         for b in range(0, len(val_rows), 4):
@@ -208,7 +242,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         model.train()
-        jobs = [(r["video_id"], int(rng.integers(0, FRAMES - T + 1)), aug_params(), r["label_idx"])
+        jobs = [(r["key"], int(rng.integers(0, FRAMES - T + 1)), aug_params(), r["label_idx"])
                 for r in train_rows for _ in range(args.windows_per_video)]
         order = rng.permutation(len(jobs))
         total, n = 0.0, 0
@@ -229,7 +263,9 @@ def main():
         p_val = predict_val()
         val_auc = metrics.safe_auc(y_val, p_val)
         improved = val_auc > best_auc + 1e-4
-        history.append({"epoch": epoch, "train_loss": round(total / n, 5), "val_video_auc": round(val_auc, 5),
+        per_domain = {f"val_auc_{d}": round(metrics.safe_auc(y_val[domains == d], p_val[domains == d]), 5)
+                      for d in sorted(set(domains))} if len(set(domains)) > 1 else {}
+        history.append({"epoch": epoch, "train_loss": round(total / n, 5), "val_video_auc": round(val_auc, 5), **per_domain,
                         "train_seconds": round(t_train, 1), "seconds": round(time.time() - t0, 1)})
         with open(run_dir / "logs" / "history.csv", "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(history[0]), lineterminator="\n")
@@ -260,6 +296,9 @@ def main():
         robust[f"{kind}_{level}" if kind != "clean" else "clean"] = {
             k: rep[k] for k in ("roc_auc", "balanced_accuracy", "fake_recall", "specificity")}
         if kind == "clean":
+            if len(set(domains)) > 1:
+                rep["by_domain"] = {d: metrics.video_report(y_val[domains == d], p[domains == d], methods_val[domains == d], threshold)
+                                    for d in sorted(set(domains))}
             rep.update({"split": "val", "note": "threshold and model selection used this split; single seed",
                         "best_epoch": best_epoch, "epochs_run": len(history), "train_minutes": round(train_minutes, 2),
                         "trainable_params": n_train,

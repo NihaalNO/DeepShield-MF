@@ -41,10 +41,13 @@ OUT = paths.RESULTS_ROOT / "final"
 DATASETS = {"ffpp_test": "ffpp_c23", "celebdf_v1": "celebdf_v1", "celebdf_v2": "celebdf_v2"}
 MODELS = {
     "final": [RESULTS / "e2e_finetune_aug-frame_final" / "seed0"],
+    # amendment (docs/final_evaluation_protocol.md, "Second-domain model"): FF++ + Celeb-DF v2 train
+    "final_cdf": [RESULTS / "e2e_finetune_aug-frame_ffpp+celebdf" / "seed0"],
     "C": [RESULTS / "C_faces_T8" / f"seed{s}" for s in range(3)],
     "F": [RESULTS / "F_faces_T8" / f"seed{s}" for s in range(3)],
 }
-LABELS = {"final": "Fine-tuned ResNet50+ViT, per-frame aug. (final)", "C": "C: ResNet50+ViT, mean (frozen)",
+LABELS = {"final": "Fine-tuned ResNet50+ViT, per-frame aug. (final)",
+          "final_cdf": "Same, trained on FF++ + Celeb-DF v2 train", "C": "C: ResNet50+ViT, mean (frozen)",
           "F": "F: full hybrid (frozen)"}
 KEYS = ("roc_auc", "balanced_accuracy", "fake_recall", "specificity")
 
@@ -105,7 +108,9 @@ def main():
     ap.add_argument("--models", nargs="+", choices=list(MODELS), default=list(MODELS))
     args = ap.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    for run_dirs in MODELS.values():
+    for name, run_dirs in MODELS.items():
+        if name not in args.models:
+            continue
         for d in run_dirs:
             if not d.is_dir():
                 sys.exit(f"Missing pre-registered run {d}")
@@ -121,7 +126,7 @@ def main():
                 if out.exists():
                     print(f"{tag}: already evaluated ({out}), not re-run")
                     continue
-                if name == "final":
+                if name.startswith("final"):
                     p, thr = score_e2e(run_dir, ds, rows, device)
                 else:
                     p, thr = score_head(run_dir, store, rows, device)
@@ -140,7 +145,8 @@ def main():
 
 
 def write_table():
-    lines = ["Final evaluation, video level. Thresholds were chosen on the FF++ validation split and frozen.",
+    lines = ["Final evaluation, video level. Thresholds were chosen on each model's validation split(s) and frozen",
+             "(FF++ val; final_cdf: FF++ val + Celeb-DF v2 val). After final_cdf's training, Celeb-DF is a same-dataset test.",
              "One evaluation per model and dataset. C and F: mean ± std over 3 seeds; final: one model with a",
              "95% family-bootstrap CI for AUC.", "",
              "| Dataset | Model | AUC | Balanced acc | Fake recall | Specificity | Mean P(fake) |",

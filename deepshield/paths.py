@@ -54,4 +54,8 @@ DATASETS = {
                    "manifest": MANIFEST_DIR / "celebdf_v1.csv", "data_dir": DATA_ROOT / "celebdf_v1"},
     "celebdf_v2": {"root": _env_path("DEEPSHIELD_CELEBDF_V2_DIR", DATA_ROOT / "Celeb-DF-V2"),
                    "manifest": MANIFEST_DIR / "celebdf_v2.csv", "data_dir": DATA_ROOT / "celebdf_v2"},
+    # Celeb-DF v2 videos outside both official test lists, split train/val by identity
+    # (scripts/build_manifest_celebdf_train.py); used to fine-tune on a second domain.
+    "celebdf_v2_train": {"root": _env_path("DEEPSHIELD_CELEBDF_V2_DIR", DATA_ROOT / "Celeb-DF-V2"),
+                         "manifest": MANIFEST_DIR / "celebdf_v2_train.csv", "data_dir": DATA_ROOT / "celebdf_v2_train"},
 }

@@ -1,0 +1,29 @@
+{
+  "dataset": "Celeb-DF v2, videos outside the v1 and v2 official test lists",
+  "seed": 0,
+  "val_identities": [
+    "id10",
+    "id26",
+    "id33",
+    "id35",
+    "id55",
+    "id60"
+  ],
+  "identity_overlap_train_val": [],
+  "videos": 2512,
+  "by_split_and_label": {
+    "train/fake": 1500,
+    "train/real": 633,
+    "val/fake": 300,
+    "val/real": 79
+  },
+  "available_before_sampling": {
+    "train/real": 633,
+    "val/real": 79,
+    "train/fake": 4171,
+    "val/fake": 1118
+  },
+  "excluded_test_videos": 528,
+  "problems": [],
+  "use": "fine-tuning (train) and model selection / threshold (val); never the official test lists"
+}
