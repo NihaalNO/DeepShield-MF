@@ -57,3 +57,6 @@ backend/models/*.onnx
 
 # Generated training/evaluation outputs (checkpoints, logs, metrics, plots)
 /results/
+.taste-skill
+brag-output
+docs
