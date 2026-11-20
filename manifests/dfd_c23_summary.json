@@ -1,0 +1,27 @@
+{
+  "dataset": "FaceForensics++ DeepFakeDetection (DFD), c23",
+  "videos": 3431,
+  "by_label": {
+    "real": 363,
+    "fake": 3068
+  },
+  "actors": 28,
+  "families": 28,
+  "frames_min_median_max": [
+    5,
+    739,
+    1620
+  ],
+  "resolution": {
+    "1920x1080": 3431
+  },
+  "skipped_non_video_files": [
+    "manipulated_sequences/DeepFakeDetection/c23/videos/tmpclbhb0ys",
+    "manipulated_sequences/DeepFakeDetection/c23/videos/tmphe6pka02",
+    "manipulated_sequences/DeepFakeDetection/c23/videos/tmpi0cb337a",
+    "manipulated_sequences/DeepFakeDetection/c23/videos/tmpq7ito0ym",
+    "manipulated_sequences/DeepFakeDetection/c23/videos/tmpx73v9ogn"
+  ],
+  "problems": [],
+  "use": "unseen-dataset test only; never used for training, model selection or thresholds"
+}

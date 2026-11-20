@@ -560,8 +560,8 @@ with tab_analyze:
              f'gap:10px;margin-top:8px">{thumbs}</div></div>')
         note("The score is the model's mean P(fake) over 8-frame windows of the tracked face. It is not a calibrated "
              "probability. Trained on FaceForensics++ and Celeb-DF, it reached 0.874 AUC on the FF++ test split and 0.956 on "
-             "the Celeb-DF v2 test list, but it still calls about 1 in 5 held-out real Celeb-DF videos and 3 in 10 real FF++ "
-             "videos fake, and it has not been tested on any third source. Treat a verdict as a signal, not proof."
+             "the Celeb-DF v2 test list. On DeepFakeDetection, a dataset it never saw, it reached 0.814 AUC but caught only "
+             "65% of the fakes and called 18% of the real videos fake. Treat a verdict as a signal, not proof."
              + (" Stills were never part of its evaluation." if p.get("mode") == "image" else ""))
     elif p:
         cls, headline = verdict_of(p)
@@ -645,7 +645,8 @@ with tab_history:
 # ============================================================
 # RESEARCH RESULTS (read from results/ written by the research scripts)
 # ============================================================
-DATASETS = [("ffpp_test", "FF++ c23 test"), ("celebdf_v1", "Celeb-DF v1"), ("celebdf_v2", "Celeb-DF v2")]
+DATASETS = [("ffpp_test", "FF++ c23 test"), ("celebdf_v1", "Celeb-DF v1"), ("celebdf_v2", "Celeb-DF v2"),
+            ("dfd", "DFD (unseen)")]
 MODELS = [("final_cdf", "Fine-tuned, FF++ + Celeb-DF (served)", C["accent"]), ("final", "Fine-tuned, FF++ only", C["series2"]),
           ("C", "C: ResNet50+ViT, frozen", C["series3"]), ("F", "F: full hybrid, frozen", C["faint"])]
 
@@ -722,7 +723,7 @@ with tab_research:
 
         section("Served model on held-out data", "fine-tuned ResNet50 + ViT, trained on FF++ + Celeb-DF v2", "shield")
         ff = F.get(("ffpp_test", "final_cdf"), [{}])[0]
-        kpi_row([tile("ffpp_test", "FF++ test"), tile("celebdf_v1", "Celeb-DF v1"), tile("celebdf_v2", "Celeb-DF v2"),
+        kpi_row([tile("ffpp_test", "FF++ test"), tile("celebdf_v2", "Celeb-DF v2"), tile("dfd", "DFD, never seen"),
                  dict(label="FF++ test · balanced acc", value=f"{ff.get('balanced_accuracy', 0):.3f}",
                       foot=f"fake recall {ff.get('fake_recall', 0):.3f}<br>specificity {ff.get('specificity', 0):.3f}")])
 

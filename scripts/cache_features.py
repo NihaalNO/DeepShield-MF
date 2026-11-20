@@ -61,7 +61,11 @@ def main():
     base = paths.DATASETS[args.dataset]["data_dir"]
     frames_root = base / args.variant
     index_rows = [r for r in csv.DictReader(open(base / "frame_index.csv", encoding="utf-8")) if r["status"] == "ok"]
-    video_ids = sorted(r["video_id"] for r in index_rows)
+    # every model reads exactly FRAMES crops per video; clips too short to give them are left out
+    short = [r["video_id"] for r in index_rows if int(r["n_saved"]) != FRAMES]
+    if short:
+        print(f"Skipping {len(short)} videos with fewer than {FRAMES} face crops (too short), e.g. {short[:3]}")
+    video_ids = sorted(r["video_id"] for r in index_rows if int(r["n_saved"]) == FRAMES)
     if args.limit:
         video_ids = video_ids[:: max(1, len(video_ids) // args.limit)][: args.limit]
     n = len(video_ids)

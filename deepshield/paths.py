@@ -58,4 +58,6 @@ DATASETS = {
     # (scripts/build_manifest_celebdf_train.py); used to fine-tune on a second domain.
     "celebdf_v2_train": {"root": _env_path("DEEPSHIELD_CELEBDF_V2_DIR", DATA_ROOT / "Celeb-DF-V2"),
                          "manifest": MANIFEST_DIR / "celebdf_v2_train.csv", "data_dir": DATA_ROOT / "celebdf_v2_train"},
+    # FF++ DeepFakeDetection (actors), c23: unseen-dataset test set (scripts/build_manifest_dfd.py)
+    "dfd_c23": {"root": FFPP_ROOT, "manifest": MANIFEST_DIR / "dfd_c23.csv", "data_dir": DATA_ROOT / "dfd_c23"},
 }

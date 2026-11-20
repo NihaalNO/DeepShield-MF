@@ -298,6 +298,26 @@ python scripts/finetune_e2e.py --mode finetune --aug frame --train-families 360 
 python scripts/final_eval.py --models final_cdf
 ```
 
+**Unseen-dataset test (DFD).** Download FaceForensics++'s `DeepFakeDetection` and `DeepFakeDetection_original` (c23) with the FaceForensics++ script into `DEEPSHIELD_FFPP_DIR`, then:
+
+```bash
+python scripts/build_manifest_dfd.py
+```
+
+```bash
+python scripts/extract_faces.py --dataset dfd_c23
+```
+
+```bash
+python scripts/cache_features.py --dataset dfd_c23 --variant faces
+```
+
+```bash
+python scripts/final_eval.py --datasets dfd
+```
+
+DFD is never used for training, model selection or thresholds. Videos without a usable face track (43) or with fewer than 32 face crops (13 short clips) are left out, leaving 3,375 videos.
+
 The manifest (`manifests/celebdf_v2_train.csv`) excludes every video of the v1 and v2 test lists (v1 is a byte-identical subset of v2), keeps all reals, subsamples fakes (1,500 train, 300 validation), and puts 6 celebrities in validation only. Model selection and the threshold use FF++ val + Celeb-DF val. The rule for serving it was written in `docs/final_evaluation_protocol.md` before training. After this step the Celeb-DF test lists are same-dataset tests: unseen videos, but 54 of 59 test celebrities also appear in training.
 
 **Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). The official test lists are used only for the final evaluation; the FF++-only models never trained, selected or set thresholds on Celeb-DF. Step 9 trains on other Celeb-DF v2 videos.
@@ -556,8 +576,10 @@ existed.
 | Celeb-DF v2 test AUC | 0.781 (unseen dataset) | **0.956** (0.938–0.973), same dataset |
 | Real Celeb-real test videos called fake | 50% | 21% |
 | Real FF++ test videos called fake | 19% | 31% |
+| **DFD test AUC (unseen dataset, 3,375 videos)** | 0.759 (0.729–0.786) | **0.814** (0.779–0.847) |
+| DFD: fakes caught / real videos called fake | 59% / 20% | 65% / 18% |
 
-The second model's threshold (0.816) was chosen on FF++ val + Celeb-DF val. It ranks better everywhere, but at that threshold it trades FF++ specificity (0.807 to 0.693) for Celeb-DF specificity (0.554 to 0.825). Its Celeb-DF numbers are same-dataset results, so it has no unseen-dataset score.
+The second model's threshold (0.816) was chosen on FF++ val + Celeb-DF val. It ranks better everywhere, but at that threshold it trades FF++ specificity (0.807 to 0.693) for Celeb-DF specificity (0.554 to 0.825). Its Celeb-DF numbers are same-dataset results. Its unseen-dataset score comes from FaceForensics++'s DeepFakeDetection set (DFD: 28 paid actors in scripted scenes, never used for training, selection or thresholds): 0.814 AUC, against 0.648 ± 0.004 for C and 0.636 ± 0.021 for the full hybrid F. At its threshold it misses 35% of DFD's fakes, so on new footage a "real" verdict is weak evidence.
 
 **Final evaluation, FF++-only models** (`scripts/final_eval.py`; thresholds frozen from FF++ validation):
 
@@ -615,7 +637,7 @@ The hybrid notebook (`notebooks/`) is unchanged and still writes to
 
 ## Limitations
 
-* **The local app serves the fine-tuned ResNet50 + ViT trained on FF++ + Celeb-DF v2, not the full hybrid.** The full hybrid (FFT branch + BiLSTM) scored no better than the simpler model on every test set, so it is not served. The served model reads only the middle ~10 seconds of a video and needs a visible face. On held-out test videos it still calls 21% of real Celeb-real interviews and 31% of real FF++ videos fake (the FF++-only model: 50% and 19%). It has not been tested on any dataset outside its training sources, so its behaviour on other video sources is unknown. The Docker image and `space/` still serve the ViT baseline.
+* **The local app serves the fine-tuned ResNet50 + ViT trained on FF++ + Celeb-DF v2, not the full hybrid.** The full hybrid (FFT branch + BiLSTM) scored no better than the simpler model on every test set, so it is not served. The served model reads only the middle ~10 seconds of a video and needs a visible face. On held-out test videos it still calls 21% of real Celeb-real interviews and 31% of real FF++ videos fake (the FF++-only model: 50% and 19%). On DFD, a dataset it never saw, it reaches 0.814 AUC but misses 35% of the fakes and calls 18% of the real videos fake; other sources may differ again. The Docker image and `space/` still serve the ViT baseline.
 * **Domain shift:** on 44 real and 44 fake DFDC videos (not part of training), the deployed ViT separates the classes only weakly (mean P(real) 0.67 on real vs 0.58 on fake videos). Treat predictions as an AI-assisted signal, not proof.
 * The ViT baseline numbers come from a frame-level split and may be inflated by leakage between frames of the same video.
 * No dataset, and no trained hybrid checkpoint, is shipped. The training notebooks cannot run until `data/FF_frames` exists.

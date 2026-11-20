@@ -71,3 +71,25 @@ on the same videos, and its FF++ validation AUC is at most 0.02 below `final`'s 
 After this fine-tuning the Celeb-DF scores are **same-dataset** results: the test videos are unseen, but
 54 of the 59 test celebrities also appear in training. No unseen-dataset score exists for `final_cdf`;
 that would need a third dataset. The earlier results of `final`, `C` and `F` stay as they are.
+
+## Amendment: unseen-dataset test on DeepFakeDetection (written 20 November 2026, before any DFD score)
+
+**Why.** After `final_cdf` trained on Celeb-DF, no test set was unseen by the served model. FaceForensics++'s
+DeepFakeDetection set (DFD, c23) is: 363 real videos of 28 paid actors in scripted scenes and 3,068
+deepfakes between pairs of them. None of its actors or videos are in FF++'s YouTube videos or in Celeb-DF.
+
+**Data.** `manifests/dfd_c23.csv` (`scripts/build_manifest_dfd.py`): every DFD video, split `test`; five
+`tmp*` leftovers of an interrupted download are skipped. Face crops with the unchanged
+`scripts/extract_faces.py` settings (32 frames, YuNet track, 1.3x crops); a video without a usable
+face track is excluded, as for every other dataset. DFD is used for nothing but this test.
+
+**Models.** `final_cdf` (served), `final` (FF++ only), and the frozen-feature rows `C` and `F` (3 seeds
+each), all exactly as already trained, each with its own frozen validation threshold.
+
+**Reported.** ROC AUC (primary), balanced accuracy, fake recall, specificity, mean P(fake), with 95 %
+CIs from resampling the 28 actors. Scored once; all results are reported, including unfavourable ones.
+No threshold, calibration or model choice is changed because of DFD results.
+
+*Note added after face extraction, before any DFD score:* 13 DFD fakes (short `secret_conversation` clips)
+give fewer than the 32 face crops every model reads; they are left out for all models, like videos
+without a face track (43). DFD test set: 3,375 videos.

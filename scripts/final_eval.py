@@ -8,6 +8,7 @@ Datasets
   ffpp_test   FaceForensics++ c23 official test split (same source domain as training)
   celebdf_v1  Celeb-DF v1 official test list (cross-dataset, never seen in any form)
   celebdf_v2  Celeb-DF v2 official test list (cross-dataset, never seen in any form)
+  dfd         FF++ DeepFakeDetection (actors), c23: unseen by every model, including final_cdf
 
 Models (see MODELS)
   final       fine-tuned ResNet50 + ViT with per-frame augmentation, all 360 train families
@@ -38,7 +39,7 @@ from deepshield.data import FeatureStore, WindowBatches, window_starts  # noqa: 
 
 RESULTS = paths.RESULTS_ROOT / "ffpp_c23"
 OUT = paths.RESULTS_ROOT / "final"
-DATASETS = {"ffpp_test": "ffpp_c23", "celebdf_v1": "celebdf_v1", "celebdf_v2": "celebdf_v2"}
+DATASETS = {"ffpp_test": "ffpp_c23", "celebdf_v1": "celebdf_v1", "celebdf_v2": "celebdf_v2", "dfd": "dfd_c23"}
 MODELS = {
     "final": [RESULTS / "e2e_finetune_aug-frame_final" / "seed0"],
     # amendment (docs/final_evaluation_protocol.md, "Second-domain model"): FF++ + Celeb-DF v2 train
