@@ -372,6 +372,18 @@ def predict():
     return Response(generate(), mimetype="text/event-stream", headers=response_headers)
 
 
+@app.route("/explain", methods=["POST"])
+def explain():
+    """Per-frame Grad-CAM heatmaps for a recent /predict result: JSON body {"id": <explain_id>}."""
+    if detector is None:
+        return jsonify({"error": "Heatmaps need SERVE_MODEL=finetuned"}), 400
+    key = (request.get_json(silent=True) or {}).get("id", "")
+    try:
+        return jsonify(detector.explain(key))
+    except KeyError as exc:
+        return jsonify({"error": exc.args[0] if exc.args else "Unknown analysis"}), 404
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({

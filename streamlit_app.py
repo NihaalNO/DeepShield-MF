@@ -450,6 +450,57 @@ def segment_timeline(segs, threshold, decider, middle):
     return style_fig(fig, 300)
 
 
+EXPLAIN_URL = f"{BACKEND_URL}/explain"
+# deletion test on validation (results/final/heatmap_deletion_val.json, docs/final_evaluation_protocol.md)
+HEATMAP_RELIABILITY = {
+    "real": "On validation videos judged real, hiding each frame's 5 hottest regions weakened the verdict more than "
+            "hiding 5 random regions in 94% of videos, so these maps show what the model relied on.",
+    "fake": "On validation videos judged fake, the maps passed the check only narrowly: the hottest regions mattered "
+            "more than random ones in 65% of videos, but hiding them barely changed the fake evidence on average. "
+            "Read them as a hint, not as the place where the manipulation is.",
+}
+
+
+def render_heatmaps(p):
+    """'Why' section: per-frame Grad-CAM heatmaps from POST /explain, loaded on request."""
+    section("Why the model decided this", "per-frame heatmaps of the scored segment", "info")
+    key = f"explain_{p['explain_id']}"
+    if key not in st.session_state:
+        if st.button("Show per-frame heatmaps", key=f"btn_{key}"):
+            with st.spinner("Computing heatmaps for every frame..."):
+                try:
+                    r = requests.post(EXPLAIN_URL, json={"id": p["explain_id"]}, timeout=300)
+                    st.session_state[key] = r.json() if r.status_code == 200 else {"error": r.json().get("error", r.text)}
+                except requests.exceptions.RequestException as exc:
+                    st.session_state[key] = {"error": f"Could not reach the backend ({type(exc).__name__})."}
+            st.rerun()
+        return
+    e = st.session_state[key]
+    if "error" in e:
+        st.error(e["error"])
+        return
+    frames = e["frames"]
+    show = st.radio("Show", ["Heatmap", "Original frames"], horizontal=True, key=f"view_{key}", label_visibility="collapsed")
+    imgs = "".join(f'<figure style="margin:0"><img src="{f["overlay"] if show == "Heatmap" else f["image"]}" alt="Frame {i + 1}" '
+                   f'style="width:100%;border-radius:8px;display:block"><figcaption style="font-size:13px;color:{C["muted"]};'
+                   f'margin-top:4px">Frame {i + 1}</figcaption></figure>' for i, f in enumerate(frames))
+    ncol = 8 if len(frames) > 1 else 1
+    width = "160px" if len(frames) == 1 else "1fr"
+    html(f'<div class="card"><div class="card-title">Toward "{e["verdict"]}": brighter = pushed the model toward this verdict'
+         f'</div><div style="display:grid;grid-template-columns:repeat({ncol},minmax(0,{width}));gap:10px;margin-top:10px">'
+         f'{imgs}</div></div>')
+    if len(frames) > 1:
+        fig = go.Figure(go.Bar(x=[i + 1 for i in range(len(frames))], y=[f["heat_mean"] for f in frames],
+                               marker_color=C["accent"], marker_line_width=0,
+                               hovertemplate="Frame %{x}: mean heat %{y:.3f}<extra></extra>"))
+        fig.update_xaxes(title_text="Frame of the scored segment", title_font=dict(color=C["muted"], size=12), dtick=4)
+        fig.update_yaxes(title_text="Mean heat", title_font=dict(color=C["muted"], size=12))
+        fig.update_layout(title=dict(text="How much each frame drove the verdict", font=dict(size=13, color=C["muted"]), x=0.01))
+        st.plotly_chart(style_fig(fig, 240), width="stretch", config=PLOT_CONFIG)
+    note("Grad-CAM of both branches (ResNet50 and ViT) toward the verdict, on one scale for all frames. "
+         + HEATMAP_RELIABILITY[e["verdict"]], "info" if e["verdict"] == "real" else "warn")
+
+
 def window_chart(probs, threshold):
     xs = [f"W{i + 1}" for i in range(len(probs))]
     fig = go.Figure(go.Bar(
@@ -511,7 +562,8 @@ def frame_timeline(timeline):
 with tab_analyze:
     left, right = st.columns([5, 7], gap="large")
     with left:
-        how = ("The model tracks the face through 32 frames from the middle of the video and scores it as a whole."
+        how = ("The model reads the whole video in segments of about 10 s, tracking the face in each; the verdict uses "
+               "the middle segment."
                if FINETUNED else "Videos are sampled at about two frames per second.")
         html(f'<div class="card"><div class="card-title">{icon("layers", 18)}Upload media</div>'
              f'<p class="card-sub">Images (JPG, PNG, BMP, WebP) or videos (MP4, AVI, MOV, MKV). {how}</p></div>')
@@ -612,6 +664,8 @@ with tab_analyze:
         html(f'<div class="card" style="margin-top:8px"><div class="card-title">Face crops the model scored</div>'
              f'<div style="display:grid;grid-template-columns:repeat({8 if cols > 1 else 1},minmax(0,{96 if cols == 1 else 999}px));'
              f'gap:10px;margin-top:8px">{thumbs}</div></div>')
+        if p.get("explain_id"):
+            render_heatmaps(p)
         note("The score is the model's mean P(fake) over 8-frame windows of the tracked face. It is not a calibrated "
              "probability. Trained on FaceForensics++ and Celeb-DF, it reached 0.874 AUC on the FF++ test split and 0.956 on "
              "the Celeb-DF v2 test list. On DeepFakeDetection, a dataset it never saw, it reached 0.814 AUC but caught only "

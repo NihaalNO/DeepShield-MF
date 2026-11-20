@@ -139,3 +139,18 @@ datasets' validation balanced accuracies. Whatever the choice, the app shows eve
 **Test report.** Scored once on the FF++ test split, the Celeb-DF v2 test list and DFD (the longest
 videos, median 25 s), for R1 and the adopted rule: AUC, balanced accuracy, fake recall, specificity.
 Check: R1 must reproduce the stored test scores of `final_cdf` wherever the middle segment has a face.
+
+## Amendment: per-frame heatmaps (written 20 November 2026, before the deletion test was run)
+
+**Method** (`deepshield/explain.py`): Grad-CAM of the served model on the segment that decided the verdict,
+ResNet50 layer4 (7 x 7) and ViT last-block patch tokens (14 x 14), toward the verdict's log-odds, one
+shared scale per segment. Per-frame occlusion was tried first and rejected: hiding one cell of one frame
+moves the segment's log-odds by about 0.01, so its maps are mostly noise.
+
+**Faithfulness test, validation only**: 100 FF++ val and 100 Celeb-DF val videos (seed 0, half fake, half
+real by label), middle segment, verdict at the served threshold. Hide each frame's 5 hottest cells (7 x 7
+grid, mean colour) vs 5 random cells; measure the drop of log-odds toward the verdict.
+
+**Acceptance**: the heatmaps are shown for a verdict ("fake" or "real") only if, on validation videos with
+that verdict, the hottest cells weaken it more than random cells in more than half of the videos and on
+average. A verdict type that fails is shown without heatmaps, with a note saying why.

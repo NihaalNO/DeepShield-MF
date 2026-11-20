@@ -19,6 +19,8 @@ usage (library):
 import base64
 import json
 import sys
+import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 import cv2
@@ -89,6 +91,7 @@ class FineTunedDetector:
             if a.get("format") == "deepshield-aggregation/1":
                 self.aggregation = {"rule": a["rule"], "threshold": float(a["threshold"])}
         self.checkpoint = str(checkpoint)
+        self._recent = OrderedDict()  # explain id -> crops of the segment behind a verdict (last 16 analyses)
         if not paths.FACE_DETECTOR_MODEL.is_file():
             raise FileNotFoundError(f"Face detector model not found: {paths.FACE_DETECTOR_MODEL}")
 
@@ -159,6 +162,7 @@ class FineTunedDetector:
             decider = near_mid
             score = segs[decider]["score"]
         crops = best[decider]
+        explain_id = self._remember(crops)
         d = segs[decider]
         yield {"stage": "done", "model_kind": "finetuned", "mode": "video", "evaluated": rule == "middle",
                "rule": rule, "score": score, "threshold": thr, "p_calibrated": self.calibrated(score) if rule == "middle" else None,
@@ -166,7 +170,8 @@ class FineTunedDetector:
                "segments_scored": len(scored), "window_probs": d["window_probs"],
                "windows_fake": int(sum(p >= self.threshold for p in d["window_probs"])), "frames_analyzed": len(crops),
                "face_rate": d["face_rate"], "segment_seconds": [d["start_s"], d["end_s"]], "video_seconds": n_frames / fps,
-               "stride": stride, "thumbs": [_thumb(crops[j]) for j in np.linspace(0, len(crops) - 1, 8).astype(int)]}
+               "stride": stride, "thumbs": [_thumb(crops[j]) for j in np.linspace(0, len(crops) - 1, 8).astype(int)],
+               "explain_id": explain_id}
 
     # ---- image -------------------------------------------------------------------------
     def analyze_image(self, path):
@@ -181,4 +186,29 @@ class FineTunedDetector:
         crop = _jpeg_round_trip(xf.crop_square(frame, x + w / 2, y + h / 2, float(max(w, h)) * MARGIN))
         probs = self._window_probs([crop] * T)
         return self._result(probs, {"mode": "image", "evaluated": False, "frames_analyzed": 1, "face_rate": 1.0,
+                                    "explain_id": self._remember(np.stack([crop] * T)),
                                     "thumbs": [_thumb(crop)]})
+
+    # ---- explanations ----------------------------------------------------------------
+    def _remember(self, crops):
+        key = uuid.uuid4().hex
+        self._recent[key] = np.asarray(crops)
+        while len(self._recent) > 16:
+            self._recent.popitem(last=False)
+        return key
+
+    def explain(self, explain_id):
+        """Grad-CAM heatmaps (deepshield/explain.py) for the segment behind a recent verdict."""
+        from deepshield import explain as ex
+        if explain_id not in self._recent:
+            raise KeyError("Unknown or expired analysis; run the analysis again.")
+        crops = self._recent[explain_id]
+        score = float(np.mean(self._window_probs(list(crops))))
+        verdict_fake = score >= self.threshold
+        _, _, comb = ex.gradcam_maps(self, crops, verdict_fake)
+        unique = 1 if all(np.array_equal(crops[0], c) for c in crops[1:]) else len(crops)
+        heat = comb.reshape(len(comb), -1)
+        scale = max(float(np.percentile(comb[:unique], 99)), 1e-6)  # one display scale for the whole segment
+        return {"verdict": "fake" if verdict_fake else "real", "segment_score": score,
+                "frames": [{"overlay": ex.overlay(crops[i], comb[i] / scale), "image": _thumb(crops[i], 160),
+                            "heat_mean": float(heat[i].mean()), "heat_max": float(heat[i].max())} for i in range(unique)]}
