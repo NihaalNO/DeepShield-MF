@@ -93,3 +93,25 @@ No threshold, calibration or model choice is changed because of DFD results.
 *Note added after face extraction, before any DFD score:* 13 DFD fakes (short `secret_conversation` clips)
 give fewer than the 32 face crops every model reads; they are left out for all models, like videos
 without a face track (43). DFD test set: 3,375 videos.
+
+## Amendment: calibration of the served model (written 20 November 2026, before fitting)
+
+**Why.** The served model `final_cdf` outputs a mean window P(fake) that is not a probability, and its
+single threshold (0.816, chosen on pooled FF++ + Celeb-DF validation videos, which are 80 % fake) called
+31 % of real FF++ test videos fake. That test result is already known; the change below is therefore
+motivated by it, but every choice is made on validation data only.
+
+**Calibration.** Platt scaling, p = sigmoid(a * logit(score) + b), fitted on `final_cdf`'s validation
+scores (FF++ val 840 videos + Celeb-DF v2 val 377 videos), with sample weights that give each of the four
+cells (dataset x real/fake) the same total weight. The calibrated value therefore reads as "probability
+of fake if real and fake were equally likely, averaged over the two datasets". Its quality is estimated
+on validation by 5-fold cross-fitting over families (ECE with 10 bins, Brier, NLL, same weights).
+
+**Decision rule.** Fake if the calibrated probability is at least 0.5. It replaces the 0.816 threshold
+only if it gives a higher mean of the two datasets' validation balanced accuracies; otherwise the
+threshold stays and only the calibrated probability is shown.
+
+**Test report.** The fitted map is applied once to the stored test scores of `final_cdf` (FF++ test,
+Celeb-DF v1/v2 test lists, DFD); nothing is refitted afterwards. Reported: ECE, Brier and NLL with the
+same class-balanced weights, and specificity, fake recall and balanced accuracy at the adopted rule.
+AUC does not change: the map is monotone.

@@ -17,6 +17,7 @@ usage (library):
     for event in det.analyze_video(path): ...   # progress events, then {"stage": "done", ...}
 """
 import base64
+import json
 import sys
 from pathlib import Path
 
@@ -72,6 +73,14 @@ class FineTunedDetector:
         self.model = model.to(self.device).eval()
         self.threshold = float(ckpt["threshold"])
         self.fake_index = int(ckpt["fake_index"])
+        # optional calibration next to the checkpoint's run directory (scripts/calibrate_served.py)
+        self.calibration = None
+        calib_path = Path(checkpoint).resolve().parent.parent / "calibration.json"
+        if calib_path.is_file():
+            c = json.loads(calib_path.read_text())
+            if c.get("format") == "deepshield-calibration/1":
+                self.calibration = c
+                self.threshold = float(c["threshold_raw"])  # the decision rule chosen on validation
         self.checkpoint = str(checkpoint)
         if not paths.FACE_DETECTOR_MODEL.is_file():
             raise FileNotFoundError(f"Face detector model not found: {paths.FACE_DETECTOR_MODEL}")
@@ -92,9 +101,17 @@ class FineTunedDetector:
             probs.append(float(torch.softmax(logits.float(), dim=1)[0, self.fake_index]))
         return probs
 
+    def calibrated(self, score):
+        """P(fake) for equally likely real and fake videos (Platt scaling fitted on validation), or None."""
+        if not self.calibration:
+            return None
+        z = float(np.log(max(score, 1e-6) / max(1 - score, 1e-6)))
+        return float(1 / (1 + np.exp(-(self.calibration["a"] * z + self.calibration["b"]))))
+
     def _result(self, probs, extra):
         score = float(np.mean(probs))
         return {"stage": "done", "model_kind": "finetuned", "score": score, "threshold": self.threshold,
+                "p_calibrated": self.calibrated(score),
                 "label": "fake" if score >= self.threshold else "real", "window_probs": probs,
                 "windows_fake": int(sum(p >= self.threshold for p in probs)), **extra}
 

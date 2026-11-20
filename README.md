@@ -318,6 +318,14 @@ python scripts/final_eval.py --datasets dfd
 
 DFD is never used for training, model selection or thresholds. Videos without a usable face track (43) or with fewer than 32 face crops (13 short clips) are left out, leaving 3,375 videos.
 
+**Step 10: calibration of the served model.**
+
+```bash
+python scripts/calibrate_served.py
+```
+
+Fits Platt scaling, p = sigmoid(a x logit(score) + b), on the served model's validation scores (FF++ val + Celeb-DF v2 val), weighted so that both datasets and both classes count equally. It writes `calibration.json` next to the checkpoint's run directory; `deepshield/serving.py` reads it and adds `p_calibrated` to each result. As recorded in `docs/final_evaluation_protocol.md` before fitting, the decision rule "calibrated p >= 0.5" would replace the threshold only if it raised mean per-dataset balanced accuracy on validation. It did not (0.838 vs 0.840), so the threshold stays at 0.816.
+
 The manifest (`manifests/celebdf_v2_train.csv`) excludes every video of the v1 and v2 test lists (v1 is a byte-identical subset of v2), keeps all reals, subsamples fakes (1,500 train, 300 validation), and puts 6 celebrities in validation only. Model selection and the threshold use FF++ val + Celeb-DF val. The rule for serving it was written in `docs/final_evaluation_protocol.md` before training. After this step the Celeb-DF test lists are same-dataset tests: unseen videos, but 54 of 59 test celebrities also appear in training.
 
 **Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). The official test lists are used only for the final evaluation; the FF++-only models never trained, selected or set thresholds on Celeb-DF. Step 9 trains on other Celeb-DF v2 videos.
@@ -464,7 +472,7 @@ The frontend finds the backend through `DEEPSHIELD_BACKEND_URL` (default `http:/
 
 * `GET /health` → `{status, serve_model, threshold, device, model_loaded, model_error, model_arch, model_path, class_names, max_upload_mb, model_url_set}`
 * `POST /predict` (multipart field `file`) → Server-Sent Events, one JSON object per `data:` line. Errors arrive as `{"error": ...}` (with `"kind": "no_face"` when no face was found).
-  * `SERVE_MODEL=finetuned`: progress events `{"stage": "decoding"}`, `{"stage": "faces", "done", "of"}`, `{"stage": "scoring"}`, then `{"stage": "done", "model_kind": "finetuned", "score", "threshold", "label", "window_probs", "windows_fake", "mode", "evaluated", "frames_analyzed", "face_rate", "segment_seconds", "video_seconds", "thumbs"}`. `score` is the mean window P(fake), not a calibrated probability; `thumbs` are small JPEG data URLs of the face crops that were scored.
+  * `SERVE_MODEL=finetuned`: progress events `{"stage": "decoding"}`, `{"stage": "faces", "done", "of"}`, `{"stage": "scoring"}`, then `{"stage": "done", "model_kind": "finetuned", "score", "threshold", "label", "window_probs", "windows_fake", "mode", "evaluated", "frames_analyzed", "face_rate", "segment_seconds", "video_seconds", "thumbs"}`. `score` is the mean window P(fake), not a calibrated probability; `p_calibrated` (present when a `calibration.json` exists) is P(fake) for equally likely real and fake videos, typically off by about 10 points; `thumbs` are small JPEG data URLs of the face crops that were scored.
   * `SERVE_MODEL=vit`: `{total_frames, real_count, fake_count, real_percentage, fake_percentage}` after every sampled frame (~2 per second); the last event holds the final counts.
 
 ### Docker (optional)
@@ -578,6 +586,15 @@ existed.
 | Real FF++ test videos called fake | 19% | 31% |
 | **DFD test AUC (unseen dataset, 3,375 videos)** | 0.759 (0.729–0.786) | **0.814** (0.779–0.847) |
 | DFD: fakes caught / real videos called fake | 59% / 20% | 65% / 18% |
+
+**Calibration of the served model** (`scripts/calibrate_served.py`, fitted on validation, applied once to the stored test scores; class-balanced expected calibration error, lower is better):
+
+| | Validation | FF++ test | Celeb-DF v1 | Celeb-DF v2 | DFD |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw score | 0.092 | 0.159 | 0.106 | 0.109 | 0.127 |
+| Platt-calibrated | 0.044 (cross-fitted) | 0.138 | 0.141 | 0.126 | 0.097 |
+
+Calibration helps on validation, FF++ and DFD but not on Celeb-DF, so the shown probability is approximate. It does not fix the FF++ trade-off below: one threshold cannot serve both datasets better than 0.816 does on validation (the calibrated rule would lower FF++ validation specificity from 0.764 to 0.707).
 
 The second model's threshold (0.816) was chosen on FF++ val + Celeb-DF val. It ranks better everywhere, but at that threshold it trades FF++ specificity (0.807 to 0.693) for Celeb-DF specificity (0.554 to 0.825). Its Celeb-DF numbers are same-dataset results. Its unseen-dataset score comes from FaceForensics++'s DeepFakeDetection set (DFD: 28 paid actors in scripted scenes, never used for training, selection or thresholds): 0.814 AUC, against 0.648 ± 0.004 for C and 0.636 ± 0.021 for the full hybrid F. At its threshold it misses 35% of DFD's fakes, so on new footage a "real" verdict is weak evidence.
 

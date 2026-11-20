@@ -378,6 +378,7 @@ def health():
         "status": "ok",
         "serve_model": SERVE_MODEL,
         "threshold": THRESHOLD,
+        "calibrated": bool(detector is not None and detector.calibration),
         "device": str(device),
         "model_loaded": MODEL_LOADED,
         "model_error": MODEL_LOAD_ERROR,

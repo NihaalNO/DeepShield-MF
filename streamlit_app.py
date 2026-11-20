@@ -534,10 +534,14 @@ with tab_analyze:
             face_foot = f"of {p['frames_analyzed']} frames, {a:.1f}&ndash;{b:.1f} s of {p['video_seconds']:.1f} s"
         else:
             face_foot = "one still image"
+        pc = p.get("p_calibrated")
+        second = (dict(label="Calibrated probability fake", value=f"{100 * pc:.0f}", unit="%",
+                       foot="if real and fake were equally likely; typically off by about 10 points")
+                  if pc is not None else dict(label="Threshold", value=f"{thr:.3f}", foot="chosen on validation, then frozen"))
         kpi_row([
-            dict(label="Video fake score", value=f"{score:.3f}", foot="mean P(fake) over the windows",
+            dict(label="Video fake score", value=f"{score:.3f}", foot=f"mean P(fake) over the windows · threshold {thr:.3f}",
                  accent=C["fake"] if cls == "fake" else C["real"]),
-            dict(label="Threshold", value=f"{thr:.3f}", foot="chosen on FF++ validation, then frozen"),
+            second,
             dict(label="Windows above threshold", value=f"{p['windows_fake']}", unit=f"/{len(p['window_probs'])}",
                  foot="8-frame windows, 50% overlap"),
             dict(label="Face found", value=f"{100 * p['face_rate']:.0f}", unit="%", foot=face_foot),
