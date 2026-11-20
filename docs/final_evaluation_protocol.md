@@ -115,3 +115,27 @@ threshold stays and only the calibrated probability is shown.
 Celeb-DF v1/v2 test lists, DFD); nothing is refitted afterwards. Reported: ECE, Brier and NLL with the
 same class-balanced weights, and specificity, fake recall and balanced accuracy at the adopted rule.
 AUC does not change: the map is monotone.
+
+## Amendment: whole-video reading (written 20 November 2026, before any segment was scored)
+
+**Why.** The served model reads one 32-frame segment from the middle of a video (about 8.5 s at stride 8),
+so a manipulated passage elsewhere is missed.
+
+**Segments** (`deepshield/segments.py`). The evaluated middle segment is repeated back to back over the
+whole video (starts at middle_start + k x 32 x stride), plus a segment flush with the first and with the
+last frame when they would otherwise leave at least half a segment unread; at most 40 segments, evenly
+spaced, always including the middle one. Each segment gets its own face track and crops with the
+training pipeline; a segment with a face in fewer than half of its frames is not scored.
+
+**Rules for one video score.** R1 `middle`: the middle segment's score (the evaluated reading; if it has
+no face, the nearest segment that has one). R2 `mean`: the mean over scored segments. R3 `max`: the
+highest segment score. All use the served model `final_cdf` unchanged.
+
+**Choice, on validation only** (FF++ val + Celeb-DF v2 val): R2 or R3 replaces R1 for the verdict only if
+its mean validation AUC over the two datasets is higher than R1's; between R2 and R3 the higher wins.
+R1 keeps its threshold (0.816); an adopted R2 or R3 gets the threshold that maximises the mean of the two
+datasets' validation balanced accuracies. Whatever the choice, the app shows every segment's score.
+
+**Test report.** Scored once on the FF++ test split, the Celeb-DF v2 test list and DFD (the longest
+videos, median 25 s), for R1 and the adopted rule: AUC, balanced accuracy, fake recall, specificity.
+Check: R1 must reproduce the stored test scores of `final_cdf` wherever the middle segment has a face.

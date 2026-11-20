@@ -347,6 +347,16 @@ def run_analysis(uploaded_file):
                     st.error(f"Backend error: {data['error']}")
                 return None
             stage = data.get("stage")
+            if stage == "plan":
+                progress.progress(8, text=f"Reading the whole video: {data['segments']} segment"
+                                         f"{'s' if data['segments'] != 1 else ''} over {data['video_seconds']:.0f} s...")
+                continue
+            if stage == "segment":
+                sc = data.get("score")
+                progress.progress(8 + int(87 * data["done"] / data["of"]),
+                                  text=f"Segment {data['done']} of {data['of']} · "
+                                       + (f"score {sc:.2f}" if sc is not None else "no face in this part"))
+                continue
             if stage == "decoding":
                 progress.progress(20, text=f"Decoding {data['frames_wanted']} frames from the middle of the clip...")
                 continue
@@ -412,6 +422,31 @@ def score_gauge(score, threshold, cls):
                    dict(range=[threshold, 1], color="rgba(242,242,242,0.10)")],
             threshold=dict(line=dict(color=C["text"], width=3), thickness=0.85, value=threshold),
         )))
+    return style_fig(fig, 300)
+
+
+def segment_timeline(segs, threshold, decider, middle):
+    """One bar per segment along the video's time axis; height = segment score."""
+    fig = go.Figure()
+    xs = [(x["start_s"] + x["end_s"]) / 2 for x in segs]
+    widths = [max(0.2, (x["end_s"] - x["start_s"]) * 0.92) for x in segs]
+    ys = [x["score"] if x["score"] is not None else 0.03 for x in segs]
+    colors = [C["faint"] if x["score"] is None else (C["fake"] if x["score"] >= threshold else C["real"]) for x in segs]
+    text = ["no face" if x["score"] is None else f"{x['score']:.2f}" for x in segs]
+    fig.add_trace(go.Bar(x=xs, y=ys, width=widths, marker_color=colors, marker_line_width=0, text=text,
+                         textposition="outside", cliponaxis=False, textfont=dict(family=FONT, size=12, color=C["text"]),
+                         customdata=[[x["start_s"], x["end_s"]] for x in segs],
+                         hovertemplate="%{customdata[0]:.1f}-%{customdata[1]:.1f} s: %{text}<extra></extra>"))
+    fig.add_hline(y=threshold, line=dict(color=C["text"], width=1.5, dash="dot"))
+    fig.add_annotation(x=1, xref="paper", y=threshold, text="threshold", showarrow=False, xanchor="right", yshift=10,
+                       font=dict(size=12, color=C["muted"]))
+    m = segs[middle]
+    fig.add_annotation(x=(m["start_s"] + m["end_s"]) / 2, y=0, yref="paper", yshift=-2, text="middle (evaluated)",
+                       showarrow=False, yanchor="top", font=dict(size=11, color=C["muted"]))
+    fig.update_yaxes(range=[0, 1.15], tickvals=[0, 0.5, 1], title_text="Segment score", title_font=dict(color=C["muted"], size=12))
+    fig.update_xaxes(title_text="Time in the video (s)", title_font=dict(color=C["muted"], size=12), ticksuffix=" s")
+    fig.update_layout(bargap=0.05, showlegend=False,
+                      title=dict(text="Whole video: score of every segment (32 frames, about 8-11 s each)", font=dict(size=13, color=C["muted"]), x=0.01))
     return style_fig(fig, 300)
 
 
@@ -520,7 +555,13 @@ with tab_analyze:
         if p.get("mode") == "image":
             detail = f"Score {score:.2f} is {side} the threshold {thr:.2f} · single image, face repeated as one window"
         else:
-            detail = f"Score {score:.2f} is {side} the threshold {thr:.2f} · {p['windows_fake']} of {len(p['window_probs'])} windows above it"
+            if p.get("segments"):
+                rule_txt = {"middle": "the middle segment", "mean": "the mean over segments", "max": "the highest segment"}[p.get("rule", "middle")]
+                n_fake = sum(1 for x in p["segments"] if x["score"] is not None and x["score"] >= thr)
+                detail = (f"Score {score:.2f} ({rule_txt}) is {side} the threshold {thr:.2f} · "
+                          f"{n_fake} of {p['segments_scored']} segments above it over {p['video_seconds']:.0f} s")
+            else:
+                detail = f"Score {score:.2f} is {side} the threshold {thr:.2f} · {p['windows_fake']} of {len(p['window_probs'])} windows above it"
         html(f"""
         <div class="verdict {cls}">
           <div class="badge">{icon("alert" if cls == "fake" else "check", 30)}</div>
@@ -546,6 +587,15 @@ with tab_analyze:
                  foot="8-frame windows, 50% overlap"),
             dict(label="Face found", value=f"{100 * p['face_rate']:.0f}", unit="%", foot=face_foot),
         ])
+        if p.get("segments") and len(p["segments"]) > 1:
+            st.plotly_chart(segment_timeline(p["segments"], thr, p["decider"], p["middle"]), width="stretch", config=PLOT_CONFIG)
+            flagged = [x for k, x in enumerate(p["segments"])
+                       if k != p["decider"] and x["score"] is not None and x["score"] >= thr]
+            if flagged and cls == "real":
+                spans = ", ".join(f"{x['start_s']:.0f}&ndash;{x['end_s']:.0f} s" for x in flagged[:4])
+                note(f"{len(flagged)} other segment{'s' if len(flagged) > 1 else ''} score{'' if len(flagged) > 1 else 's'} "
+                     f"above the threshold ({spans}). The verdict uses the {p.get('rule', 'middle')} segment, the reading the model "
+                     "was evaluated on; check those passages yourself.", "warn")
         g, t = st.columns([4, 7], gap="medium")
         with g:
             st.plotly_chart(score_gauge(score, thr, cls), width="stretch", config=PLOT_CONFIG)
@@ -821,8 +871,9 @@ with tab_research:
                                  "Specificity": mean_of(reps, "specificity")})
         with st.expander("All final-evaluation numbers", expanded=False):
             st.dataframe(pd.DataFrame(rows).round(3), width="stretch", hide_index=True)
-        note("Thresholds were chosen on the FF++ validation split and frozen. On Celeb-DF they transfer poorly "
-             "(specificity 0.15&ndash;0.58), so AUC is the meaningful cross-dataset number.")
+        note("Each model's threshold was chosen on its own validation data and frozen before testing. Thresholds "
+             "transfer poorly between datasets (on DFD the served model catches 65% of fakes at its threshold), so AUC "
+             "is the most comparable number across datasets.")
 
 # ============================================================
 # ABOUT
@@ -835,8 +886,8 @@ with tab_about:
                 '<span class="arrow">&rarr;</span><span class="step">ViT-B/16 per frame</span><span class="arrow">&rarr;</span>'
                 '<span class="step">Majority vote</span>')
     ft_card = ("Fine-tuned ResNet50 + ViT", "Trained on FF++ and Celeb-DF v2: 0.874 AUC on the FF++ test split and 0.956 on "
-               "the Celeb-DF v2 test list (unseen videos of a dataset it trained on). Only the middle 32 frames of a video "
-               "are read, so a manipulated passage elsewhere is missed.",
+               "the Celeb-DF v2 test list (unseen videos of a dataset it trained on). Every ~10 s segment of a video is scored "
+               "and shown; the verdict uses the middle segment, the reading it was evaluated on.",
                '<span class="step">YuNet face track</span><span class="arrow">&rarr;</span><span class="step">32 frames</span>'
                '<span class="arrow">&rarr;</span><span class="step">ResNet50 + ViT</span><span class="arrow">&rarr;</span>'
                '<span class="step">8-frame windows</span><span class="arrow">&rarr;</span><span class="step">Video score</span>')

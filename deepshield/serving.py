@@ -32,7 +32,7 @@ for p in (ROOT, ROOT / "scripts"):
 
 import extract_faces as xf  # noqa: E402  (the training-time face pipeline)
 from finetune_e2e import FRAMES, T, Net  # noqa: E402  (the trained model's definition)
-from deepshield import paths  # noqa: E402
+from deepshield import paths, segments as sg  # noqa: E402
 from deepshield.data import window_starts  # noqa: E402
 
 # served model: trained on FF++ + Celeb-DF v2 train (docs/final_evaluation_protocol.md, "Second-domain model")
@@ -81,6 +81,13 @@ class FineTunedDetector:
             if c.get("format") == "deepshield-calibration/1":
                 self.calibration = c
                 self.threshold = float(c["threshold_raw"])  # the decision rule chosen on validation
+        # how segment scores become one video score (scripts/eval_segments.py, chosen on validation)
+        self.aggregation = {"rule": "middle", "threshold": self.threshold}
+        agg_path = Path(checkpoint).resolve().parent.parent / "aggregation.json"
+        if agg_path.is_file():
+            a = json.loads(agg_path.read_text())
+            if a.get("format") == "deepshield-aggregation/1":
+                self.aggregation = {"rule": a["rule"], "threshold": float(a["threshold"])}
         self.checkpoint = str(checkpoint)
         if not paths.FACE_DETECTOR_MODEL.is_file():
             raise FileNotFoundError(f"Face detector model not found: {paths.FACE_DETECTOR_MODEL}")
@@ -115,40 +122,51 @@ class FineTunedDetector:
                 "label": "fake" if score >= self.threshold else "real", "window_probs": probs,
                 "windows_fake": int(sum(p >= self.threshold for p in probs)), **extra}
 
-    # ---- video -------------------------------------------------------------------------
+    # ---- video: every segment ---------------------------------------------------------
     def analyze_video(self, path):
-        """Generator of progress events; the last one has stage 'done' (or raises NoFaceError)."""
+        """Generator of progress events over every segment (deepshield/segments.py); the last event has
+        stage 'done'. Raises NoFaceError if no segment has a face in at least half of its frames."""
         cap = cv2.VideoCapture(str(path))
         n_frames, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS) or 30.0
         cap.release()
         if n_frames <= 0:
             raise RuntimeError("Unable to read the video's frame count")
-        indices, stride = xf.choose_frame_indices(n_frames, FRAMES, MAX_STRIDE)
-        yield {"stage": "decoding", "frames_total": n_frames, "frames_wanted": len(indices)}
-        frames = xf.read_frames(path, indices)
-        indices = [i for i in indices if i in frames]
-        if len(indices) < MIN_FRAMES:
-            raise RuntimeError(f"Only {len(indices)} frames could be decoded (need {MIN_FRAMES})")
-
-        dets = []
-        for k, i in enumerate(indices):
-            dets.append(xf.detect(frames[i]))
-            if k % 4 == 3 or k == len(indices) - 1:
-                yield {"stage": "faces", "done": k + 1, "of": len(indices)}
-        trk = xf.track(dets)
-        det_rate = float((~np.isnan(trk[:, 0])).mean())
-        if det_rate < MIN_DET_RATE:
-            raise NoFaceError(f"A face was found in only {det_rate:.0%} of the sampled frames "
-                              f"(the model needs at least {MIN_DET_RATE:.0%}).")
-        smooth = xf.fill_and_smooth(trk)
-        crops = [_jpeg_round_trip(xf.crop_square(frames[i], cx, cy, float(size) * MARGIN))
-                 for i, (cx, cy, size) in zip(indices, smooth)]
-        yield {"stage": "scoring", "frames": len(crops)}
-        probs = self._window_probs(crops)
-        yield self._result(probs, {
-            "mode": "video", "evaluated": True, "frames_analyzed": len(crops), "face_rate": det_rate,
-            "segment_seconds": [indices[0] / fps, indices[-1] / fps], "video_seconds": n_frames / fps,
-            "stride": stride, "thumbs": [_thumb(crops[j]) for j in np.linspace(0, len(crops) - 1, 8).astype(int)]})
+        plan, middle, stride = sg.plan(n_frames)
+        yield {"stage": "plan", "segments": len(plan), "video_seconds": n_frames / fps}
+        segs, best = [None] * len(plan), {}
+        for done, (k, frames) in enumerate(sg.iter_segment_frames(path, plan), 1):
+            crops, rate = sg.segment_crops(frames, plan[k])
+            seg = {"start_s": plan[k][0] / fps, "end_s": plan[k][-1] / fps, "face_rate": rate, "middle": k == middle,
+                   "score": None, "window_probs": None}
+            if crops is not None:
+                probs = self._window_probs(list(crops))
+                seg.update(score=float(np.mean(probs)), window_probs=probs, p_calibrated=self.calibrated(float(np.mean(probs))))
+                best[k] = crops
+            segs[k] = seg
+            yield {"stage": "segment", "done": done, "of": len(plan), "score": seg["score"]}
+        scored = [k for k, x in enumerate(segs) if x and x["score"] is not None]
+        if not scored:
+            raise NoFaceError(f"No part of the video shows a face in at least {sg.MIN_DET_RATE:.0%} of its frames "
+                              "(the model judges faces only).")
+        rule, thr = self.aggregation["rule"], self.aggregation["threshold"]
+        near_mid = min(scored, key=lambda k: abs(k - middle))
+        if rule == "mean":
+            score, decider = float(np.mean([segs[k]["score"] for k in scored])), max(scored, key=lambda k: segs[k]["score"])
+        elif rule == "max":
+            decider = max(scored, key=lambda k: segs[k]["score"])
+            score = segs[decider]["score"]
+        else:
+            decider = near_mid
+            score = segs[decider]["score"]
+        crops = best[decider]
+        d = segs[decider]
+        yield {"stage": "done", "model_kind": "finetuned", "mode": "video", "evaluated": rule == "middle",
+               "rule": rule, "score": score, "threshold": thr, "p_calibrated": self.calibrated(score) if rule == "middle" else None,
+               "label": "fake" if score >= thr else "real", "segments": segs, "decider": decider, "middle": middle,
+               "segments_scored": len(scored), "window_probs": d["window_probs"],
+               "windows_fake": int(sum(p >= self.threshold for p in d["window_probs"])), "frames_analyzed": len(crops),
+               "face_rate": d["face_rate"], "segment_seconds": [d["start_s"], d["end_s"]], "video_seconds": n_frames / fps,
+               "stride": stride, "thumbs": [_thumb(crops[j]) for j in np.linspace(0, len(crops) - 1, 8).astype(int)]}
 
     # ---- image -------------------------------------------------------------------------
     def analyze_image(self, path):
