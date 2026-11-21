@@ -1,161 +1,228 @@
-# DeepShield-MF
+<div align="center">
 
-## Deepfake Video Detection using CNN, Vision Transformer, FFT and BiLSTM
+# 🛡️ DeepShield-MF
 
-DeepShield-MF is a deepfake detection system that analyzes videos using spatial, frequency-domain and temporal features to classify content as **Real** or **Fake**.
+**Deepfake video detection with CNN + Vision Transformer fusion, face tracking and whole-video analysis**
 
-The repository contains these model tracks:
+[![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.14%20·%20CUDA%2012.6-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![timm](https://img.shields.io/badge/timm-ResNet50%20%2B%20ViT--B%2F16-FFD21E?logo=huggingface&logoColor=black)](https://github.com/huggingface/pytorch-image-models)
+[![Flask](https://img.shields.io/badge/API-Flask-000000?logo=flask&logoColor=white)](https://flask.palletsprojects.com/)
+[![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![Use](https://img.shields.io/badge/use-research%20%26%20education-6e7781)](#-license)
 
-| Track | What it is | Where it lives | Served by the app? |
-| --- | --- | --- | --- |
-| **Fine-tuned ResNet50 + ViT** | Video-level model on face crops: ResNet50 and ViT-B/16 with their last layers fine-tuned, scored over 8-frame windows | `scripts/finetune_e2e.py` → `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/` (trained on FF++ + Celeb-DF v2; the FF++-only `e2e_finetune_aug-frame_final/` is kept) | **Yes, by default** (`SERVE_MODEL=finetuned`) |
-| **ViT baseline** | Frame-level ViT-B/16 classifier | `notebooks/DD_ViT_Final.ipynb` → `backend/models/best_vit_model.pth` | With `SERVE_MODEL=vit`, and in the Docker image |
-| **Hybrid research model** | Video-level ResNet50 + ViT-B/16 + FFT + BiLSTM | `notebooks/frac_df_cnnvit_fft_temporal.ipynb`, `scripts/` (row F) | No; evaluated by the research scripts only |
+[Results](#-results-at-a-glance) · [How it works](#-how-it-works) · [The app](#️-the-app) · [Quick start](#-quick-start) · [Research pipeline](#-research-pipeline) · [Limitations](#️-limitations)
 
-> The local app (Flask + Streamlit) serves the **fine-tuned ResNet50 + ViT trained on FF++ + Celeb-DF v2** (0.874 AUC on the FF++ test split, 0.956 on the Celeb-DF v2 test list; see [Results](#results)). The ViT baseline remains available with `SERVE_MODEL=vit`.
+<img src="assets/readme/app_result_timeline.jpg" alt="DeepShield-MF result view: verdict, metric tiles and a timeline of segment scores over the whole video" width="900">
 
----
+<sub>A 34-second DeepFakeDetection clip: the evaluated middle segment looks real (0.07), but the timeline flags the first ~10 seconds (0.85). Faces in all screenshots are blurred.</sub>
 
-## Contents
-
-1. [Project structure](#project-structure)
-2. [Local setup (one virtual environment)](#local-setup-one-virtual-environment)
-3. [Dataset](#dataset)
-4. [Training and evaluation (notebooks)](#training-and-evaluation-notebooks)
-5. [Where results are saved](#where-results-are-saved)
-6. [Model weights](#model-weights)
-7. [Run the app locally (backend + Streamlit)](#run-the-app-locally-backend--streamlit)
-8. [Configuration (.env)](#configuration-env)
-9. [Architecture and method](#architecture-and-method)
-10. [Limitations](#limitations)
+</div>
 
 ---
 
-## Project structure
+## ✨ What it does
 
-```text
-DeepShield-MF/
-├── backend/
-│   ├── app.py                  # Flask API: GET /health, POST /predict (fine-tuned model or ViT baseline)
-│   ├── requirements.txt        # -> points to ../requirements.txt
-│   └── models/
-│       └── best_vit_model.pth  # deployed checkpoint (NOT in git, ~343 MB)
-├── streamlit_app.py            # Streamlit frontend (talks to the Flask backend)
-├── notebooks/
-│   ├── frac_df_cnnvit_fft_temporal.ipynb  # hybrid research model (CNN+ViT+FFT+BiLSTM)
-│   ├── DD_ViT_Final.ipynb                 # ViT baseline (source of the deployed checkpoint)
-│   ├── deepfake_cnn_vit.ipynb             # frame extraction + CNN/ViT fusion experiment
-│   ├── frac_df_cnnvit.ipynb               # CNN/ViT fusion on a data fraction
-│   └── deepfake_detection_vit_best.ipynb  # archived Colab experiment (not runnable as-is)
-├── data/                       # datasets (NOT in git, you create it, see "Dataset")
-├── results/                    # all training/evaluation outputs (NOT in git, auto-created)
-├── requirements.txt            # the single dependency list for everything
-├── .env.example                # configuration template, copy to .env
-├── Dockerfile                  # backend container (gunicorn, port 7860)
-└── space/                      # Hugging Face Space deployment bundle (backend only)
+| | |
+| --- | --- |
+| 🎞️ **Reads the whole video** | Cuts the upload into ~10 s segments of 32 frames, tracks the face in each and scores every segment. |
+| 🧠 **Fine-tuned fusion model** | ResNet50 and ViT-B/16 with their last layers fine-tuned on face crops, averaged over 8-frame windows. |
+| ⚖️ **Honest verdict** | One threshold (0.816) chosen on validation data only; a calibrated probability shown alongside, with its error. |
+| 🔥 **Explains itself** | Per-frame Grad-CAM heatmaps of the segment behind the verdict, checked with a deletion test. |
+| 🧪 **Evaluated properly** | Source-family-disjoint splits, every test set scored once under a protocol written beforehand, plus a dataset no model ever saw. |
+
+> [!NOTE]
+> The app serves the **fine-tuned ResNet50 + ViT trained on FaceForensics++ and Celeb-DF v2**. The original ViT frame classifier is still available with `SERVE_MODEL=vit`. The full hybrid (CNN + ViT + FFT + BiLSTM) is kept as a research model: it scored no better than the simpler fusion.
+
+---
+
+## 📊 Results at a glance
+
+<img src="assets/readme/results_auc.png" alt="Video-level ROC AUC of four models on FF++ test, Celeb-DF v1, Celeb-DF v2 and DFD" width="820">
+
+| Test set | Served model | What it means |
+| --- | ---: | --- |
+| 🎯 **FF++ c23 test** (839 videos) | **0.874** AUC (95% CI 0.851–0.899) | Same source as training, unseen source families |
+| 🎭 **Celeb-DF v2** test list (516) | **0.956** (0.938–0.973) | Unseen videos, but celebrities also seen in training |
+| 🆕 **DeepFakeDetection** (3,375) | **0.814** (0.779–0.847) | A dataset no model saw: catches 65% of fakes, flags 18% of real videos |
+
+All numbers are video level, scored **once** per model and test set, with thresholds frozen on validation data. The rules were written in [`docs/final_evaluation_protocol.md`](docs/final_evaluation_protocol.md) before each score existed.
+
+---
+
+## 🧠 How it works
+
+```mermaid
+flowchart LR
+    A[📤 Upload<br/>video or image] --> B[🎞️ Segments<br/>32 frames each,<br/>whole video]
+    B --> C[🙂 YuNet face track<br/>224×224 crops]
+    C --> D[ResNet50<br/>layer4 fine-tuned]
+    C --> E[ViT-B/16<br/>last 2 blocks fine-tuned]
+    D --> F[Concat + mean<br/>over 8-frame windows]
+    E --> F
+    F --> G["Segment score<br/>mean P(fake)"]
+    G --> H{Middle segment<br/>≥ 0.816 ?}
+    H -->|yes| I[🔴 Manipulation detected]
+    H -->|no| J[🟢 No manipulation detected]
+    G --> K[📈 Timeline of every segment<br/>+ warning for flagged parts]
+    G --> L[📐 Calibrated probability]
+    I --> M[🔥 Per-frame Grad-CAM<br/>on request]
+    J --> M
 ```
 
-`package.json` / `package-lock.json` are leftovers from an earlier React frontend. There is no React source in this repository and they are not used. The frontend is `streamlit_app.py`.
+<details>
+<summary><b>Why each step is there</b></summary>
+
+* **Face tracking** is the single biggest gain: the same model scores 0.750 AUC on face crops vs 0.577 on whole frames.
+* **Fine-tuning** the last ResNet50 stage and the last two ViT blocks is the change that matters: test AUC 0.853 vs 0.752 with frozen features.
+* **Segments over the whole video**: the model was evaluated on one 32-frame segment, so the verdict still uses the middle one. Combining all segments (mean or maximum) did not do better on validation. The other segments are shown on a timeline instead, and a warning flags any above the threshold. On DFD that warning catches 17% of the fakes the verdict misses, at a 9% false-alarm rate on real videos.
+* **Calibration**: the raw score is not a probability. Platt scaling fitted on validation brings the calibration error from 0.092 to 0.044, but it transfers unevenly (better on FF++ and DFD, worse on Celeb-DF), so the shown probability is approximate.
+* **Heatmaps**: Grad-CAM of both branches toward the verdict. Hiding each frame's 5 hottest regions weakened "real" verdicts more than random regions in 94% of validation videos, but "fake" verdicts in only 65%, so maps of fake verdicts are a hint.
+
+</details>
 
 ---
 
-## Local setup (one virtual environment)
+## 🖥️ The app
 
-The whole project (backend, frontend, notebooks) uses **one** virtual environment, `.venv/`, at the **repository root**, and **one** dependency file, `requirements.txt`. Do not create a venv inside `backend/`, and never create one while another venv is active.
+| 🏠 Console | 🔬 Research results tab |
+| --- | --- |
+| <img src="assets/readme/app_home.jpg" alt="DeepShield-MF console: status bar, upload card and preview" width="440"> | <img src="assets/readme/app_research.jpg" alt="Research results tab: AUC tiles, cross-dataset chart and robustness chart" width="440"> |
 
-Requirements: Python **3.10 to 3.13** (tested locally with 3.13.1 on Windows), Git.
+<details open>
+<summary><b>🔥 Per-frame heatmaps</b> (Show per-frame heatmaps under any result)</summary>
+<br>
+<img src="assets/readme/app_heatmaps.jpg" alt="Grid of 32 frames with Grad-CAM heatmaps over the mouth region, and a bar chart of how much each frame drove the verdict" width="900">
 
-### 1. Clone
+<sub>A real FF++ clip judged real: the model relied mostly on the mouth and lower face, more in frames 22–28.</sub>
+</details>
+
+The console has four tabs: **Analyze** (upload, verdict, timeline, heatmaps), **History** (this session's analyses), **Research results** (the evaluation, read live from `results/`) and **About**.
+
+---
+
+## 🚀 Quick start
+
+> [!IMPORTANT]
+> Datasets and model weights are **not** in the repository and are never downloaded automatically. The served model's checkpoint is produced by the research pipeline (Steps 1–9 below), or switch to the ViT baseline with `SERVE_MODEL=vit`.
+
+**1. Clone and create one virtual environment** at the repository root (Python 3.10+; tested with 3.14.10 on Windows):
 
 ```bash
-git clone https://github.com/Kshubham0315/DeepShield-MF.git
+git clone https://github.com/NihaalNO/DeepShield-MF.git
 cd DeepShield-MF
 ```
-
-### 2. Create the virtual environment (repository root)
-
-Windows (PowerShell or cmd):
 
 ```powershell
 py -3 -m venv .venv
 .venv\Scripts\activate
 ```
 
-Linux / macOS:
+On Linux / macOS: `python3 -m venv .venv && source .venv/bin/activate`. If PowerShell refuses `Activate.ps1`, call `.venv\Scripts\python` directly.
+
+**2. Install PyTorch, then everything else.** Pick one PyTorch build, then the shared requirements (pip keeps the build you installed):
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
-
-If PowerShell refuses to run `Activate.ps1`, skip activation and call the interpreter directly, e.g. `.venv\Scripts\python -m pip ...`, `.venv\Scripts\python backend\app.py`, `.venv\Scripts\python -m streamlit run streamlit_app.py`.
-
-### 3. Install PyTorch, then everything else
-
-Pick **one** PyTorch build:
-
-```bash
-# CPU only (works everywhere, smallest download)
-python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-# or NVIDIA GPU: take the exact command for your CUDA version from
-# https://pytorch.org/get-started/locally/  (e.g. --index-url .../whl/cu126)
-```
-
-Then:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-`pip` keeps the PyTorch build you installed in the previous step. (If you skip that step, `pip` installs the default PyPI build, which is CPU-only on Windows.)
+Use `--index-url https://download.pytorch.org/whl/cpu` for a CPU-only build. Check with `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`.
 
-Check the install:
+**3. Run the backend and the console** in two terminals from the repository root:
 
 ```bash
-python -m pip check
-python -c "import torch; print('torch', torch.__version__, '| CUDA available:', torch.cuda.is_available())"
+python backend/app.py
 ```
 
-> Existing clones: older instructions created `backend/.venv`. That environment is no longer used. Delete it after the root `.venv` works.
+```bash
+python -m streamlit run streamlit_app.py
+```
 
----
+Open http://localhost:8501. The backend listens on http://127.0.0.1:5000 (`/health` shows what it serves). Optional: copy `.env.example` to `.env` to change settings.
 
-## Dataset
-
-Datasets are **not** included and are **not** downloaded automatically. The canonical location is `data/` at the repository root (git-ignored). All notebooks resolve it as `<repo>/data`, or as the folder in the environment variable `DEEPSHIELD_DATA_DIR` if you set it.
+<details>
+<summary><b>Expected backend log</b></summary>
 
 ```text
-data/
-├── FF++/                       # (optional) raw videos, input to frame extraction
-│   ├── fake/   *.mp4
-│   └── real/   *.mp4
-├── FF_frames/                  # extracted frames, input to ALL training notebooks
-│   ├── fake/
-│   │   ├── <video_id>_0.jpg
-│   │   ├── <video_id>_10.jpg
-│   │   └── ...
-│   └── real/
-│       └── <video_id>_<frame_index>.jpg
-└── samples/                    # (optional) test videos, e.g. sample.mp4 for DD_ViT_Final
+Using device: cuda
+Serving model: finetuned
+Fine-tuned model loaded from ...\results\ffpp_c23\e2e_finetune_aug-frame_ffpp+celebdf\seed0\checkpoints\best_trainable.pth (threshold 0.8161)
+Class mapping (output index -> label): {0: 'fake', 1: 'real'}
+Starting DeepShield backend on http://127.0.0.1:5000  (health: /health, inference: POST /predict)
 ```
 
-Rules the code relies on:
-
-* **Class folder names** must be `fake` and `real` (lower case). Classes are indexed alphabetically, so **index 0 = fake, index 1 = real**. This matches the deployed checkpoint, which was trained on folders `manipulated`/`real` (same order).
-* **Frame file names** must be `<video_id>_<frame_number>.<jpg|jpeg|png>`. The hybrid notebook groups frames by `<video_id>`, orders them by `<frame_number>`, and skips videos with fewer than `SEQ_LEN` (8) frames.
-
-### Preparing frames from raw videos
-
-Put the videos into `data/FF++/fake/` and `data/FF++/real/`. Then run, in `notebooks/deepfake_cnn_vit.ipynb`, the *Project paths* cell and the *frame extraction* cell (the one that writes to `OUTPUT_PATH`). It saves **every 10th frame** of each video to `data/FF_frames/<class>/<video>_<frame_index>.jpg`. You only need to run that part of the notebook. It does not train anything.
+Without the checkpoint the backend still starts, but `/health` reports `model_loaded: false` and `/predict` returns HTTP 503 instead of guessing with untrained weights.
+</details>
 
 ---
 
-## FaceForensics++ research pipeline (scripts)
+## 🗂️ Project structure
 
-The evaluation work on FaceForensics++ (source-disjoint splits, face crops, ablations) lives in `deepshield/` and `scripts/`, not in the notebooks. All locations are defined in `deepshield/paths.py`.
+```text
+DeepShield-MF/
+├── backend/app.py              # Flask API: /health, /predict (SSE), /explain
+├── streamlit_app.py            # the analysis console
+├── deepshield/                 # library: paths, data, models, metrics, engine,
+│                               #   backbones, segments (whole video), serving, explain (Grad-CAM)
+├── scripts/                    # research pipeline: manifests, face crops, features, training,
+│                               #   ablations, analyses, fine-tuning, final evaluation, calibration
+├── manifests/                  # tracked dataset manifests and official splits (FF++, Celeb-DF, DFD)
+├── docs/final_evaluation_protocol.md   # evaluation rules, each written before its scores
+├── assets/face_detector/       # YuNet face detector (ONNX)
+├── assets/readme/              # images of this README
+├── notebooks/                  # original notebooks (ViT baseline, hybrid, fusion experiments)
+├── data/  results/             # datasets and all outputs (NOT in git)
+├── requirements.txt            # the single dependency list
+├── .env.example                # configuration template
+├── Dockerfile  space/          # backend container and Hugging Face Space (serve the ViT baseline)
+└── .streamlit/config.toml      # console theme
+```
 
-**Dataset location.** Keep the official FaceForensics++ layout and point `DEEPSHIELD_FFPP_DIR` at it in `.env` (default `<repo>/data/FaceForensics++`). Nothing is copied.
+---
+
+## 🔬 Research pipeline
+
+```mermaid
+flowchart TB
+    subgraph D["📦 Data"]
+        direction LR
+        M["1 · Manifest & official splits"] --> FC["2 · Face crops"] --> FE["3 · Feature cache"]
+    end
+    subgraph R["🔬 Research (validation)"]
+        direction LR
+        TR["4 · Train a row"] --> AB["5 · Ablations A–F × 3 seeds"] --> AN["6 · LOMO, calibration,<br/>robustness, compute"] --> IM["7 · Model changes &<br/>end-to-end fine-tuning"]
+    end
+    subgraph T["🔒 Held-out, scored once"]
+        direction LR
+        FI["8 · Final evaluation"] --> CD["9 · + Celeb-DF v2 training"] --> DFD["🆕 DFD: unseen dataset"]
+    end
+    subgraph S["🖥️ Served model"]
+        direction LR
+        CA["10 · Calibration"] --> SG["11 · Whole-video reading"] --> HM["12 · Per-frame heatmaps"]
+    end
+    D --> R --> T --> S
+```
+
+All locations live in `deepshield/paths.py`. Point `DEEPSHIELD_FFPP_DIR`, `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads in `.env`; nothing is copied.
+
+```mermaid
+pie title FF++ c23 videos per split
+    "Train · 360 families" : 4320
+    "Validation · 70" : 840
+    "Test · 70" : 840
+```
+
+> [!WARNING]
+> The **test split stays untouched** until the final evaluation. `FeatureStore.split_rows("test")` raises an error unless called with `allow_test=True`, and the training scripts never do that.
+
+<details>
+<summary><b>Steps 1–4 · data, features and one training run</b></summary>
+
+**Dataset layout** (official FaceForensics++ structure):
 
 ```text
 <DEEPSHIELD_FFPP_DIR>/
@@ -163,33 +230,23 @@ The evaluation work on FaceForensics++ (source-disjoint splits, face crops, abla
 └── manipulated_sequences/{Deepfakes,Face2Face,FaceShifter,FaceSwap,NeuralTextures}/c23/videos/TTT_SSS.mp4
 ```
 
-**Step 1: manifest and splits** (about a minute):
+**Step 1 · manifest and splits** (about a minute):
 
 ```bash
 python scripts/build_manifest.py
 ```
 
-Writes `manifests/ffpp_c23.csv` (one row per video: label, method, target and source ID, source family, split, frame count, size) and `manifests/ffpp_c23_summary.json`. A fake `TTT_SSS` and its two originals form one source family. Families follow the official FaceForensics++ split in `manifests/ffpp_official_splits/` (360/70/70 pairs), so no family is shared between train, validation and test. The script exits with an error if one is. Both files are tracked in git.
+Writes `manifests/ffpp_c23.csv` (one row per video: label, method, target and source ID, source family, split, frame count, size). A fake `TTT_SSS` and its two originals form one source family; families follow the official split in `manifests/ffpp_official_splits/` (360/70/70), so none is shared between train, validation and test.
 
-**Step 2: face crops** (roughly 1.5 hours for 6,000 videos with 8 workers, resumable):
+**Step 2 · face crops** (about 1.5 h for 6,000 videos with 8 workers, resumable):
 
 ```bash
 python scripts/extract_faces.py --workers 8
 ```
 
-Samples 32 frames per video (every 8th frame, centred), tracks one face with OpenCV's YuNet detector (`assets/face_detector/face_detection_yunet_2023mar.onnx`, from the OpenCV model zoo) and writes:
+Samples 32 frames per video (every 8th frame, centred), tracks one face with YuNet and writes 224×224 crops and full frames to `data/ffpp_c23/{faces,fullframe}/`, plus `frame_index.csv`. Videos with a face in fewer than half of the frames are marked `failed`.
 
-```text
-data/ffpp_c23/
-├── faces/<method>/<video>/<frame>.jpg       # 224x224 tracked face crop
-├── faces/<method>/<video>/meta.json         # frame indices, crop boxes, detection rate
-├── fullframe/<method>/<video>/<frame>.jpg   # same frames, whole frame resized to 224x224
-└── frame_index.csv                          # one row per video: status, frames saved, detection rate
-```
-
-Videos where a face is found in fewer than half of the frames are marked `failed` in `frame_index.csv` and get no crops. Use `--limit N` to test on the first N videos per method.
-
-**Step 3: cache backbone features** (about 20 minutes per variant on an RTX 3050):
+**Step 3 · cache backbone features** (about 20 min per variant on an RTX 3050):
 
 ```bash
 python scripts/cache_features.py --variant faces
@@ -199,58 +256,39 @@ python scripts/cache_features.py --variant faces
 python scripts/cache_features.py --variant fullframe
 ```
 
-ResNet50 and ViT-B/16 are frozen in the hybrid model, so their per-frame outputs are computed once and reused by every experiment. The grayscale frames are cached too, because the trainable FFT branch needs pixels.
+Stores ResNet50 (2048-d) and ViT (768-d) features as float16 and grayscale frames for the FFT branch in `data/ffpp_c23/features/<variant>/`.
 
-```text
-data/ffpp_c23/features/<variant>/
-├── resnet50.npy               # float16 [videos, 32, 2048]
-├── vit_base_patch16_224.npy   # float16 [videos, 32, 768]
-├── gray.npy                   # uint8   [videos, 32, 224, 224]  (about 9.6 GB)
-├── index.csv                  # row -> video_id
-└── meta.json                  # backbones, normalisation, shapes
-```
-
-**Step 4: train and validate one experiment:**
+**Step 4 · train and validate one ablation row:**
 
 ```bash
 python scripts/train.py --exp F --seed 0
 ```
 
-`--exp` selects a row of the ablation matrix (`deepshield/models.py`): A ResNet50, B ViT, C ResNet50+ViT (all mean-pooled), D ResNet50+BiLSTM, E ResNet50+ViT+BiLSTM, F the full hybrid with FFT. Other options: `--variant fullframe`, `--seq-len 4|8|16`, `--train-methods` (leave-one-method-out), `--limit-families N` (quick test).
+`--exp`: A ResNet50, B ViT, C ResNet50+ViT (mean-pooled), D ResNet50+BiLSTM, E ResNet50+ViT+BiLSTM, F full hybrid with FFT. A video's 32 frames give 7 overlapping 8-frame windows; the video score is the mean window P(fake), and the threshold maximises balanced accuracy on validation. Runs write `config.json`, `checkpoints/best.pth` (with `class_names` and threshold), `logs/history.csv`, `metrics/val_metrics.json` and `predictions/val_videos.csv` under `results/ffpp_c23/<run>/seed<S>/`.
+</details>
 
-How a video is scored: its 32 cached frames are cut into overlapping windows (8 frames, 50 % overlap, so 7 windows). The model gives each window a fake probability, and the video score is their mean. The video is called fake if that score is at or above a threshold chosen on the validation split to maximise balanced accuracy. The best epoch is chosen by validation video-level ROC-AUC.
+<details>
+<summary><b>Steps 5–7 · ablations, analyses and model changes</b></summary>
 
-Each run writes to `results/ffpp_c23/<run>/seed<S>/`:
-
-```text
-config.json                   # full configuration, data counts, hardware
-checkpoints/best.pth          # weights + model config + class_names + threshold
-logs/history.csv              # per-epoch losses, validation AUC, learning rate, seconds
-metrics/val_metrics.json      # video-level metrics, per-method breakdown, 95 % CIs
-predictions/val_videos.csv    # one row per validation video
-```
-
-Checkpoints carry their own `class_names`, model configuration and threshold. `deepshield.engine.load_checkpoint` refuses a checkpoint whose class order differs from the project's (`fake`, `real`). Confidence intervals resample source families, not individual videos.
-
-**Step 5: ablation matrix** (resumable; finished runs are skipped):
+**Step 5 · ablation matrix** (resumable):
 
 ```bash
 python scripts/run_ablations.py
 ```
 
-Trains rows A–F with 3 seeds, picks the best BiLSTM row by mean validation AUC, then runs the frame-order shuffle test, sequence lengths 4 and 16 and the full-frame comparison for it. `scripts/summarize.py` writes `results/ffpp_c23/summary/ablation_table.md` and the CSVs behind it.
+Rows A–F with 3 seeds, then the frame-order shuffle test, sequence lengths 4/16 and the full-frame comparison. `scripts/summarize.py` writes `results/ffpp_c23/summary/ablation_table.md`.
 
-**Step 6: analysis of trained runs** (validation split only; nothing is retrained except in the first script):
+**Step 6 · analysis of trained runs** (validation only):
 
-| Script | What it does | Output in `results/ffpp_c23/` |
-| --- | --- | --- |
-| `scripts/run_lomo.py` | Leave-one-method-out: trains on four manipulation methods and scores the fifth. Model selection and threshold use only the four training methods. | `<exp>_faces_T8_lomo-<Method>/`, `summary/lomo_table.md` |
-| `scripts/calibration.py` | ECE, Brier score and NLL of the video-level P(fake), raw and after Platt scaling cross-fitted over families. | `summary/calibration_table.md`, `summary/plots/reliability_<run>.png` |
-| `scripts/robustness.py` | Re-scores the frozen checkpoints on degraded face crops: JPEG, blur, downscaling, noise, brightness. | `summary/robustness_table.md`, `summary/plots/robustness_auc.png` |
-| `scripts/explain_occlusion.py --run-dir <run>/seed0` | Occlusion-sensitivity maps (7x7 grid) and a deletion test. | `<run>/seed0/explanations/` |
-| `scripts/profile_compute.py` | Time per stage (decode, face crop, each backbone, head) on GPU and CPU, parameters, peak GPU memory. Run it with the GPU otherwise idle. | `summary/compute_profile.md` |
+| Script | What it does |
+| --- | --- |
+| `scripts/run_lomo.py` | Leave-one-method-out: train on four manipulation methods, score the fifth |
+| `scripts/calibration.py` | ECE, Brier and NLL, raw and after cross-fitted Platt scaling |
+| `scripts/robustness.py` | Re-score on JPEG, blur, downscaling, noise and brightness changes |
+| `scripts/explain_occlusion.py --run-dir <run>/seed0` | Occlusion maps (7×7) and a deletion test |
+| `scripts/profile_compute.py` | Time per stage, parameters and peak GPU memory |
 
-**Step 7: optional model changes** (validation split only):
+**Step 7 · model changes**:
 
 ```bash
 python scripts/cache_extra_backbone.py --backbone efficientnet_b0
@@ -260,15 +298,17 @@ python scripts/cache_extra_backbone.py --backbone efficientnet_b0
 python scripts/run_improvements.py
 ```
 
-`run_improvements.py` trains one-change variants of the ablation rows on the cached features with 3 seeds and writes `summary/improvements_table.md`. The rows are defined in `deepshield/models.py`: `I` branch projections before fusion, `J` learned softmax gate over the branches (`J0`: fixed equal weights, the gate's ablation), `K` one-directional LSTM, `L` EfficientNet-B0 instead of ResNet50 (needs the first command), `M1`–`M3` frequency-band variants of the FFT branch.
-
 ```bash
 python scripts/finetune_e2e.py --mode finetune --aug sequence
 ```
 
-`finetune_e2e.py` trains on face-crop pixels instead of cached features: `--mode frozen|finetune` (fine-tuning unfreezes the last ResNet50 stage and the last two ViT blocks), `--aug none|sequence|frame` (the same augmentation for all frames of a window, or a different one per frame). It uses 120 training families by default (about 45 minutes on a 6 GB laptop GPU; `--train-families 360` uses the whole training split, about 2 hours), and it also scores the result on degraded validation crops. Runs go to `results/ffpp_c23/e2e_<mode>_aug-<aug>_fam<N>/` or `--name`.
+`run_improvements.py` tests branch projections (I), a learned branch gate and its ablation (J, J0), a causal LSTM (K), EfficientNet-B0 (L) and FFT band variants (M1–M3). `finetune_e2e.py` trains on face-crop pixels: `--mode frozen|finetune`, `--aug none|sequence|frame`, 120 training families by default (`--train-families 360` for all, about 2 h on a 6 GB GPU).
+</details>
 
-**Step 8: final evaluation** (run once, after all choices are made on validation):
+<details>
+<summary><b>Steps 8–9 · final evaluation and the second domain</b></summary>
+
+**Step 8 · final evaluation** (run once, after all choices are made on validation):
 
 ```bash
 python scripts/finetune_e2e.py --mode finetune --aug frame --train-families 360 --name e2e_finetune_aug-frame_final
@@ -278,9 +318,23 @@ python scripts/finetune_e2e.py --mode finetune --aug frame --train-families 360 
 python scripts/final_eval.py
 ```
 
-`final_eval.py` scores the models fixed in `docs/final_evaluation_protocol.md` on the FF++ test split and the Celeb-DF v1/v2 test lists with their frozen validation thresholds. It writes `results/final/<dataset>/<model>.json` and `results/final/final_table.md`, and never overwrites an existing result.
+Scores the models fixed in `docs/final_evaluation_protocol.md` with frozen thresholds; writes `results/final/` and never overwrites a result.
 
-**Step 9: second-domain fine-tuning (FF++ + Celeb-DF v2).** The FF++-only model called many real Celeb-DF videos fake: its only real training videos are 720 FF++ news clips. This step adds Celeb-DF v2 videos that are in neither official test list:
+**Celeb-DF test lists** (repeat with `v1` / `celebdf_v1`):
+
+```bash
+python scripts/build_manifest_celebdf.py --version v2
+```
+
+```bash
+python scripts/extract_faces.py --dataset celebdf_v2
+```
+
+```bash
+python scripts/cache_features.py --dataset celebdf_v2 --variant faces
+```
+
+**Step 9 · second domain (FF++ + Celeb-DF v2).** The FF++-only model called many real Celeb-DF videos fake: its only real training videos were 720 FF++ news clips.
 
 ```bash
 python scripts/build_manifest_celebdf_train.py
@@ -298,7 +352,9 @@ python scripts/finetune_e2e.py --mode finetune --aug frame --train-families 360 
 python scripts/final_eval.py --models final_cdf
 ```
 
-**Unseen-dataset test (DFD).** Download FaceForensics++'s `DeepFakeDetection` and `DeepFakeDetection_original` (c23) with the FaceForensics++ script into `DEEPSHIELD_FFPP_DIR`, then:
+The manifest excludes every video of both Celeb-DF test lists (v1 is a byte-identical subset of v2), keeps all reals, subsamples fakes (1,500 train, 300 validation) and keeps 6 celebrities for validation only. After this step Celeb-DF tests are same-dataset tests (54 of 59 test celebrities also appear in training).
+
+**Unseen-dataset test (DFD).** Download FF++'s `DeepFakeDetection` and `DeepFakeDetection_original` (c23) into `DEEPSHIELD_FFPP_DIR`, then:
 
 ```bash
 python scripts/build_manifest_dfd.py
@@ -316,370 +372,175 @@ python scripts/cache_features.py --dataset dfd_c23 --variant faces
 python scripts/final_eval.py --datasets dfd
 ```
 
-DFD is never used for training, model selection or thresholds. Videos without a usable face track (43) or with fewer than 32 face crops (13 short clips) are left out, leaving 3,375 videos.
+DFD is never used for training, selection or thresholds. 43 videos without a face track and 13 clips shorter than 32 crops are left out (3,375 remain).
+</details>
 
-**Step 10: calibration of the served model.**
+<details>
+<summary><b>Steps 10–12 · calibration, whole-video reading and heatmaps</b></summary>
+
+**Step 10 · calibration of the served model:**
 
 ```bash
 python scripts/calibrate_served.py
 ```
 
-Fits Platt scaling, p = sigmoid(a x logit(score) + b), on the served model's validation scores (FF++ val + Celeb-DF v2 val), weighted so that both datasets and both classes count equally. It writes `calibration.json` next to the checkpoint's run directory; `deepshield/serving.py` reads it and adds `p_calibrated` to each result. As recorded in `docs/final_evaluation_protocol.md` before fitting, the decision rule "calibrated p >= 0.5" would replace the threshold only if it raised mean per-dataset balanced accuracy on validation. It did not (0.838 vs 0.840), so the threshold stays at 0.816.
+Platt scaling p = sigmoid(a·logit(score) + b) on validation scores, weighted so both datasets and both classes count equally; writes `calibration.json` next to the checkpoint's run directory. The recorded rule "calibrated p ≥ 0.5" would have replaced the threshold only with higher validation balanced accuracy; it did not (0.838 vs 0.840), so the threshold stays 0.816.
 
-**Step 11: whole-video reading.**
+**Step 11 · whole-video reading:**
 
 ```bash
 python scripts/eval_segments.py
 ```
 
-`deepshield/segments.py` repeats the evaluated 32-frame segment back to back over the whole video (plus a segment flush with each end when it would otherwise leave half a segment unread; at most 40 segments) and gives each its own face track. `eval_segments.py` scores every segment of the validation and test videos (resumable), chooses how segment scores become one verdict on validation only (the rule recorded in `docs/final_evaluation_protocol.md` beforehand), and writes `aggregation.json` next to the checkpoint. The middle segment won (mean validation AUC 0.908, the same for the mean over segments, 0.903 for the maximum), so the verdict is unchanged; scoring every segment reproduces the stored test scores to within 3e-5.
+`deepshield/segments.py` repeats the evaluated 32-frame segment over the whole video (at most 40 segments). The script scores every segment of the validation and test videos (resumable), chooses the aggregation rule on validation (middle 0.908, mean 0.908, max 0.903 mean AUC: the middle segment stays) and writes `aggregation.json`. Scoring every segment reproduces the stored test scores to within 3·10⁻⁵.
 
-Exploratory, on DFD (76% of its videos have more than one segment): of the 1,052 fakes the verdict misses, 175 (17%) have another segment above the threshold, and of the 295 real videos judged real, 28 (9%) do. The app shows such segments as a warning.
-
-**Step 12: per-frame heatmaps.** In the app, **Show per-frame heatmaps** under a result calls `POST /explain` and shows a Grad-CAM map for every frame of the segment that decided the verdict (`deepshield/explain.py`: ResNet50 layer4 and ViT last-block tokens, toward the verdict's log-odds, one scale per segment), plus how strongly each frame drove the verdict. Per-frame occlusion was tried first and dropped: hiding one cell of one frame moves the segment's log-odds by only about 0.01, so those maps were mostly noise. A deletion test on 200 validation videos (rule recorded in `docs/final_evaluation_protocol.md` beforehand; results in `results/final/heatmap_deletion_val.json`) checked the maps: for verdicts "real", hiding each frame's 5 hottest regions weakened the verdict more than 5 random regions in 94% of videos (log-odds drop 3.53 vs 1.26); for verdicts "fake" only in 65%, with almost no effect on average (-0.007 vs -0.032). Both passed the recorded rule, but the app tells the user that maps of "fake" verdicts are only a hint. A segment takes about 2 s on the GPU.
-
-The manifest (`manifests/celebdf_v2_train.csv`) excludes every video of the v1 and v2 test lists (v1 is a byte-identical subset of v2), keeps all reals, subsamples fakes (1,500 train, 300 validation), and puts 6 celebrities in validation only. Model selection and the threshold use FF++ val + Celeb-DF val. The rule for serving it was written in `docs/final_evaluation_protocol.md` before training. After this step the Celeb-DF test lists are same-dataset tests: unseen videos, but 54 of 59 test celebrities also appear in training.
-
-**Cross-dataset data (Celeb-DF v1 and v2).** Point `DEEPSHIELD_CELEBDF_V1_DIR` and `DEEPSHIELD_CELEBDF_V2_DIR` at the downloads (official layout with `List_of_testing_videos.txt`). The official test lists are used only for the final evaluation; the FF++-only models never trained, selected or set thresholds on Celeb-DF. Step 9 trains on other Celeb-DF v2 videos.
-
-```bash
-python scripts/build_manifest_celebdf.py --version v2
-```
-
-```bash
-python scripts/extract_faces.py --dataset celebdf_v2
-```
-
-```bash
-python scripts/cache_features.py --dataset celebdf_v2 --variant faces
-```
-
-The same three commands with `v1` / `celebdf_v1` prepare Celeb-DF v1. Manifests go to `manifests/celebdf_<version>.csv` (tracked), derived data to `data/celebdf_<version>/` with the same layout as `data/ffpp_c23/`.
-
-The **test split must stay untouched** until the final evaluation: tune and select models on train and validation only. `FeatureStore.split_rows("test")` raises an error unless called with `allow_test=True`, and `scripts/train.py` never does that.
+**Step 12 · per-frame heatmaps:** served by `POST /explain` (`deepshield/explain.py`). Per-frame occlusion was tried first and dropped (hiding one cell of one frame moves the log-odds by about 0.01). The deletion test on 200 validation videos is in `results/final/heatmap_deletion_val.json`.
+</details>
 
 ---
 
-## Training and evaluation (notebooks)
+## 🧪 What the experiments showed
 
-Open the notebooks with the project `.venv` as kernel:
+<img src="assets/readme/ablation.png" alt="Ablation matrix A to F: ResNet50 plus ViT with mean pooling is as good as the full hybrid" width="820">
 
-* **VS Code**: open the repository folder, open a notebook, then *Select Kernel → Python Environments → `.venv`*.
-* **Jupyter in the browser** (optional, not in `requirements.txt`): `python -m pip install jupyterlab`, then run `python -m jupyter lab` **from the repository root** and open `notebooks/…`.
+* 🏆 **Fine-tuning is the change that matters**: validation AUC 0.670 → 0.774–0.796 on the same 120-family subset, 0.867 on all training data, 0.853 on the test split.
+* ➖ **The hybrid's extra parts add nothing on frozen features**: ResNet50 + ViT with mean pooling (C, 0.73M trainable parameters) matches the full hybrid with FFT and BiLSTM (F, 4.96M) on validation, test and Celeb-DF.
+* 🔀 **The BiLSTM ignores frame order**: shuffling frames changes AUC by less than 0.001; window lengths 4, 8 and 16 make no difference.
+* 🙂 **Face cropping is worth about +0.17 AUC** (0.750 vs 0.577 on whole frames).
+* 🆕 **Unseen manipulation methods cost 0.07–0.14 AUC** (leave-one-method-out).
+* 🌫️ **Degradations**: blur and downscaling break the frozen models' threshold (specificity 0.69 → 0.17 at mild blur); the fine-tuned model holds 0.81–0.83 AUC.
+* 🧩 **Section 16.4 head changes did not help** (projections, learned gate, causal LSTM, FFT bands); EfficientNet-B0 beat ResNet50 alone (+0.050) but not ResNet50 + ViT.
+* 🎭 **Training on a second dataset helped beyond it**: on DFD, which no model saw, 0.814 AUC vs 0.759 for the FF++-only model.
+* ⚖️ **Thresholds transfer badly between datasets**: with one threshold, real FF++ test videos called fake rose from 19% to 31% while Celeb-real fell from 50% to 21%.
 
-Each notebook starts with a **Project paths** cell. It finds the repository root by walking up from the working directory, so it works whether the kernel starts in `notebooks/` (the default) or in the repo root. It prints the dataset folder and the output folder, and the data-loading cell stops with a clear error if `data/FF_frames` is missing.
+<details>
+<summary><b>📋 Full result tables</b></summary>
 
-| Notebook | Purpose | Run order |
-| --- | --- | --- |
-| `frac_df_cnnvit_fft_temporal.ipynb` | **Hybrid research model**: video-level split → 8-frame sequences → ResNet50 + ViT + FFT → BiLSTM | run all cells top to bottom (cell 12 "overfit single batch" is an optional debug check) |
-| `DD_ViT_Final.ipynb` | **ViT baseline** (frame-level, `ImageFolder`, random 80/20 frame split) | run all. The last cell runs on a local video: set `DEEPSHIELD_SAMPLE_VIDEO` or put one at `data/samples/sample.mp4` |
-| `deepfake_cnn_vit.ipynb` | frame extraction + ResNet50/ViT feature fusion (full fine-tuning) | run all, or only the extraction cell |
-| `frac_df_cnnvit.ipynb` | ResNet50/ViT fusion with frozen backbones on 30 % of frames (CPU) | run all |
-| `deepfake_detection_vit_best.ipynb` | archived Google Colab experiment | not runnable as-is (see note in its first cell) |
+**Served model vs FF++-only model** (95% CI from resampling source families or identities):
 
-`DD_ViT_Final.ipynb` and `deepfake_cnn_vit.ipynb` keep their original `DataLoader(num_workers=4)`. On Windows, if the training cell hangs or reports worker errors, set `num_workers=0` in those `DataLoader` calls. The hybrid and fraction notebooks already use `0`.
-
-Hybrid model defaults (edit the *Config* cell): `SEQ_LEN=8`, `SEQ_STRIDE=2`, `BATCH_SIZE=2`, `EPOCHS=8`, `LR=3e-4`, `FREEZE_BACKBONES=True`, `NUM_WORKERS=0` (Windows-safe). The ResNet50 and ViT ImageNet weights are downloaded by `timm` from the Hugging Face Hub on first use and cached in `~/.cache/huggingface/`.
-
----
-
-## Where results are saved
-
-Every notebook writes **only** under `results/<experiment>/` (git-ignored, created automatically) and prints each path it saves. Re-running a notebook overwrites the files of that experiment.
-
-```text
-results/
-├── hybrid_cnn_vit_fft_bilstm/            # frac_df_cnnvit_fft_temporal.ipynb
-│   ├── checkpoints/best_hybrid_cnn_vit_fft_bilstm.pth   # {model_state_dict, class_names, config}
-│   ├── checkpoints/best_checkpoint_info.json            # best epoch, val acc/loss
-│   ├── logs/history.csv, logs/history.json              # per-epoch loss/acc/lr (written every epoch)
-│   ├── metrics/final_metrics.json                       # acc, precision, recall, F1, ROC-AUC, confusion matrix
-│   ├── metrics/classification_report.txt
-│   ├── plots/training_curves.png, confusion_matrix.png, roc_curve.png
-│   └── predictions/val_predictions.csv                  # one row per validation sequence
-├── vit_baseline/                         # DD_ViT_Final.ipynb
-│   ├── checkpoints/best_vit_model.pth
-│   ├── logs/history.csv, logs/history.json
-│   ├── metrics/final_metrics.json
-│   └── plots/confusion_matrix.png
-├── cnn_vit_fusion/                       # deepfake_cnn_vit.ipynb
-│   ├── checkpoints/best_cnn_vit_model.pth, checkpoint_epoch_<N>.pth
-│   ├── logs/history.csv, logs/history.json
-│   ├── metrics/final_metrics.json
-│   └── plots/confusion_matrix.png
-├── cnn_vit_fusion_fraction/              # frac_df_cnnvit.ipynb
-│   ├── checkpoints/small_cnn_vit_model.pth
-│   ├── logs/history.csv, logs/history.json
-│   ├── metrics/final_metrics.json, classification_report.txt
-│   └── plots/confusion_matrix.png, sample_predictions.png, roc_curve.png
-└── cnn_vit_resnet34_colab/checkpoints/   # deepfake_detection_vit_best.ipynb (when run locally)
-```
-
-The backend saves **nothing**. An uploaded file is written to the OS temp folder only while the request runs and is deleted afterwards. Predictions are returned to the caller and not stored.
-
-To deploy a newly trained ViT baseline, copy `results/vit_baseline/checkpoints/best_vit_model.pth` to `backend/models/best_vit_model.pth` (or point `MODEL_PATH` at it).
-
----
-
-## Model weights
-
-| File | Model | Used by |
-| --- | --- | --- |
-| `backend/models/best_vit_model.pth` | `timm` `vit_base_patch16_224`, 2 classes, raw `state_dict` saved from `nn.DataParallel` (`module.` prefix, stripped on load) | Flask backend |
-| `results/hybrid_cnn_vit_fft_bilstm/checkpoints/best_hybrid_cnn_vit_fft_bilstm.pth` | `TemporalHybridModel` | notebook only |
-
-Model weights are git-ignored. The original README states that the ViT checkpoint is also published at https://huggingface.co/RohRoos84/deepshield-model. To have the backend download it on startup when `backend/models/best_vit_model.pth` is missing, set `MODEL_URL` (direct file URL) and optionally `MODEL_SHA256` in `.env`.
-
-**Class mapping of the deployed checkpoint: output index 0 = fake/manipulated, 1 = real.** This comes from training with `ImageFolder` on folders `['manipulated', 'real']` (see the `print(...classes)` output in `DD_ViT_Final.ipynb`). The backend uses `CLASS_NAMES=fake,real` by default. Change it only for a checkpoint trained with another class order.
-
----
-
-## Run the app locally (backend + Streamlit)
-
-Prerequisites: setup done, and the checkpoint of the served model present:
-
-* `SERVE_MODEL=finetuned` (default): `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/seed0/checkpoints/best_trainable.pth`, written by README Step 9 (`scripts/finetune_e2e.py`); set `FINETUNED_CHECKPOINT` to `results/ffpp_c23/e2e_finetune_aug-frame_final/seed0/checkpoints/best_trainable.pth` for the FF++-only model of Step 8. It holds only the fine-tuned layers; the rest of ResNet50 and ViT-B/16 comes from the `timm` pretrained weights (downloaded once, then cached). It also needs `deepshield/`, `scripts/` and the face detector in `assets/face_detector/`.
-* `SERVE_MODEL=vit`: `backend/models/best_vit_model.pth`.
-
-Without the checkpoint the backend still starts, but `/health` reports `model_loaded: false` and `/predict` returns HTTP 503 instead of guessing with untrained weights.
-
-**What the fine-tuned model does with an upload.** Exactly what it was evaluated with: 32 frames at a constant stride (every 8th frame, fewer for short clips) from the middle of the video, a YuNet face track, square crops of 1.3x the face, 7 windows of 8 frames, and the mean window P(fake) as the video score. The video is fake if the score reaches the threshold chosen on validation (0.816 for the served model, chosen on FF++ val + Celeb-DF val). A video with a face in fewer than half of those frames is refused, and so is an image without a face. The server now reads the whole video in such segments (see Step 11): every segment is scored and shown on a timeline, and the verdict uses the middle segment, the reading the model was evaluated on. A still image is scored as one window of the same face repeated, which the model was never evaluated on. On the GPU a video takes about 1 second.
-
-Optional: `copy .env.example .env` (Windows) or `cp .env.example .env` and edit. The defaults work without a `.env`.
-
-**Terminal 1: backend** (repository root, venv active):
-
-```bash
-python backend/app.py
-```
-
-Expected log lines:
-
-```text
-Using device: cuda
-Serving model: finetuned
-Fine-tuned model loaded from ...\results\ffpp_c23\e2e_finetune_aug-frame_ffpp+celebdf\seed0\checkpoints\best_trainable.pth (threshold 0.8161)
-Class mapping (output index -> label): {0: 'fake', 1: 'real'}
-Starting DeepShield backend on http://127.0.0.1:5000  (health: /health, inference: POST /predict)
-```
-
-Check it: open http://127.0.0.1:5000/health, or
-
-```bash
-curl http://127.0.0.1:5000/health
-curl -N -F "file=@path/to/video.mp4" http://127.0.0.1:5000/predict
-```
-
-**Terminal 2: Streamlit frontend** (repository root, venv active):
-
-```bash
-python -m streamlit run streamlit_app.py
-```
-
-Open http://localhost:8501. The top bar shows *Backend online*, *Model loaded*, the device and the served model; the sidebar shows the checkpoint path and threshold. Upload an image or video and click **Analyze media**.
-
-The frontend finds the backend through `DEEPSHIELD_BACKEND_URL` (default `http://127.0.0.1:5000`). If you change the backend `HOST`/`PORT`, update that variable too.
-
-### API
-
-* `GET /health` → `{status, serve_model, threshold, device, model_loaded, model_error, model_arch, model_path, class_names, max_upload_mb, model_url_set}`
-* `POST /explain` (JSON `{"id": explain_id}`, `SERVE_MODEL=finetuned` only) → `{verdict, segment_score, frames: [{overlay, image, heat_mean, heat_max}]}`: per-frame Grad-CAM overlays as JPEG data URLs. HTTP 404 once the analysis has expired.
-* `POST /predict` (multipart field `file`) → Server-Sent Events, one JSON object per `data:` line. Errors arrive as `{"error": ...}` (with `"kind": "no_face"` when no face was found).
-  * `SERVE_MODEL=finetuned`: for a video, progress events `{"stage": "plan", "segments", "video_seconds"}` and one `{"stage": "segment", "done", "of", "score"}` per segment, then `{"stage": "done", "model_kind": "finetuned", "rule", "score", "threshold", "label", "segments", "middle", "decider", "segments_scored", "window_probs", "windows_fake", "mode", "evaluated", "frames_analyzed", "face_rate", "segment_seconds", "video_seconds", "thumbs"}`. `segments` lists every segment with `start_s`, `end_s`, `score` (`null` without a face) and `face_rate`; `window_probs`, `thumbs` and `segment_seconds` belong to the segment that decided the verdict. `score` is the mean window P(fake), not a calibrated probability; `p_calibrated` (present when a `calibration.json` exists) is P(fake) for equally likely real and fake videos, typically off by about 10 points; `thumbs` are small JPEG data URLs of the face crops that were scored; `explain_id` identifies the scored segment for `POST /explain` (kept in memory for the last 16 analyses, per backend process).
-  * `SERVE_MODEL=vit`: `{total_frames, real_count, fake_count, real_percentage, fake_percentage}` after every sampled frame (~2 per second); the last event holds the final counts.
-
-### Docker (optional)
-
-`Dockerfile` builds the backend only and serves it with gunicorn on port 7860. It copies only `backend/`, so it sets `SERVE_MODEL=vit` and serves the ViT baseline; it expects that checkpoint inside `backend/models/` at build time, or `MODEL_URL` at runtime. `space/` (the Hugging Face Space copy) is unchanged and serves the ViT baseline as before.
-
----
-
-## Configuration (.env)
-
-All settings are optional. Both `backend/app.py` and `streamlit_app.py` read `<repo>/.env`; real environment variables take precedence. See `.env.example`.
-
-| Variable | Default | Used by |
-| --- | --- | --- |
-| `HOST` / `PORT` | `127.0.0.1` / `5000` | backend |
-| `SERVE_MODEL` | `finetuned` (`vit` in the Docker image) | backend: which model `/predict` serves |
-| `FINETUNED_CHECKPOINT` | `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/seed0/checkpoints/best_trainable.pth` | backend (`SERVE_MODEL=finetuned`) |
-| `MODEL_PATH` | `backend/models/best_vit_model.pth` | backend (`SERVE_MODEL=vit`) |
-| `MODEL_URL`, `MODEL_SHA256` | unset | backend (download if `MODEL_PATH` missing) |
-| `CLASS_NAMES` | `fake,real` | backend (output index → label) |
-| `MAX_CONTENT_LENGTH_MB` | `100` | backend upload limit |
-| `CORS_ALLOWED_ORIGINS` | all | backend |
-| `DEEPSHIELD_BACKEND_URL` | `http://127.0.0.1:5000` | Streamlit |
-| `DEEPSHIELD_DATA_DIR` | `<repo>/data` | notebooks |
-| `DEEPSHIELD_SAMPLE_VIDEO` | `data/samples/sample.mp4` | `DD_ViT_Final.ipynb` last cell |
-
----
-
-## Architecture and method
-
-### Overview
-
-Deepfake videos can contain artifacts that are not always visible in a single frame. DeepShield-MF analyzes a video from three perspectives:
-
-1. **Spatial domain**: visual features from individual frames (ResNet50, ViT-B/16).
-2. **Frequency domain**: FFT magnitude spectrum of each frame.
-3. **Temporal domain**: frame-to-frame relationships (BiLSTM).
-
-### Hybrid research model
-
-```text
-Input Video
-     |
-Frame Extraction (every 10th frame)
-     |
-Sequence Builder (8 frames, stride 2, 224x224)
-     |
-     +----------------+----------------+
-     |                |                |
-     v                v                v
-   FFT             ResNet50          ViT-B/16
- Branch          Spatial Encoder   Spatial Encoder
-  (128)              (2048)            (768)
-     |                |                |
-     +----------------+----------------+
-                      |
-          Feature Fusion (concat + LayerNorm)
-                      |
-          BiLSTM Temporal Modeling (hidden 192)
-                      |
-          Temporal Pooling (mean)
-                      |
-                  Classifier
-                      |
-                 Real / Fake
-```
-
-* **ResNet50** (`timm`, ImageNet weights) captures local texture, blending and fine-grained artifacts.
-* **ViT-B/16** (`vit_base_patch16_224`, ImageNet weights) models global relationships between image patches.
-* **FFT branch**: grayscale → `fft2` → log-magnitude → small CNN. Generation methods often leave frequency-domain traces.
-* **BiLSTM** learns temporal inconsistencies across the fused per-frame features.
-
-Training details (from the notebook): video-level train/validation split (no frames from one video in both splits), class-weighted cross-entropy with label smoothing 0.05, AdamW, `ReduceLROnPlateau` on validation accuracy, gradient clipping 1.0, early stopping (patience 3), best-validation checkpoint, frozen backbones by default. Metrics: accuracy, weighted precision/recall/F1, ROC-AUC, confusion matrix, classification report.
-
-### ViT baseline (deployed)
-
-`timm.create_model("vit_base_patch16_224", pretrained=True, num_classes=2)`, fine-tuned on single frames (224×224, ImageNet normalization). At inference the backend samples ~2 frames per second, classifies each frame, and reports the share of real and fake frames. The frontend labels the video by the majority.
-
----
-
-## Results
-
-### ViT baseline
-
-Recorded in `notebooks/DD_ViT_Final.ipynb` (Kaggle run, random 80/20 split at **frame** level):
-
-| Metric | Result |
-| --- | ---: |
-| Best validation accuracy | 88.13 % |
-| Final-epoch training accuracy | 90.03 % |
-| Validation precision / recall / F1 (weighted) | 0.883 / 0.883 / 0.883 |
-
-Because the split is per frame, frames of the same video can appear in both training and validation. These numbers are therefore optimistic.
-
-### Research pipeline (FaceForensics++ c23, Chapter 16)
-
-Measured with the scripts above. Video level; the positive class is fake. Splits are the official
-source-family-disjoint FF++ splits. Models and thresholds were chosen on the validation split only. The test
-split and Celeb-DF were each scored once, under the protocol in
-[`docs/final_evaluation_protocol.md`](docs/final_evaluation_protocol.md), written before any test score
-existed.
-
-**Second-domain model** (README Step 9, served by the app; scored once like the others):
-
-| Data | FF++-only model | FF++ + Celeb-DF v2 model |
+| Data | FF++-only model | FF++ + Celeb-DF v2 model (served) |
 | --- | ---: | ---: |
 | FF++ test AUC | 0.853 | **0.874** (0.851–0.899) |
 | Celeb-DF v1 test AUC | 0.837 (unseen dataset) | **0.980** (0.949–0.998), same dataset |
 | Celeb-DF v2 test AUC | 0.781 (unseen dataset) | **0.956** (0.938–0.973), same dataset |
 | Real Celeb-real test videos called fake | 50% | 21% |
 | Real FF++ test videos called fake | 19% | 31% |
-| **DFD test AUC (unseen dataset, 3,375 videos)** | 0.759 (0.729–0.786) | **0.814** (0.779–0.847) |
+| **DFD test AUC (unseen, 3,375 videos)** | 0.759 (0.729–0.786) | **0.814** (0.779–0.847) |
 | DFD: fakes caught / real videos called fake | 59% / 20% | 65% / 18% |
 
-**Calibration of the served model** (`scripts/calibrate_served.py`, fitted on validation, applied once to the stored test scores; class-balanced expected calibration error, lower is better):
+**FF++-only models** (thresholds frozen from FF++ validation; C and F: mean ± std over 3 seeds):
+
+| Data | Model | AUC | Balanced acc | Fake recall | Specificity |
+| --- | --- | ---: | ---: | ---: | ---: |
+| FF++ test (839) | Fine-tuned ResNet50+ViT | **0.853** (0.823–0.886) | 0.795 | 0.783 | 0.807 |
+| | C: ResNet50+ViT, frozen | 0.752 ± 0.004 | 0.672 | 0.729 | 0.614 |
+| | F: full hybrid, frozen | 0.745 ± 0.009 | 0.676 | 0.732 | 0.619 |
+| Celeb-DF v1 (100) | Fine-tuned ResNet50+ViT | **0.837** (0.740–0.922) | 0.741 | 0.903 | 0.579 |
+| | C | 0.704 ± 0.027 | 0.572 | 0.968 | 0.175 |
+| | F | 0.658 ± 0.007 | 0.532 | 0.914 | 0.149 |
+| Celeb-DF v2 (516) | Fine-tuned ResNet50+ViT | **0.781** (0.738–0.821) | 0.718 | 0.882 | 0.554 |
+| | C | 0.627 ± 0.013 | 0.578 | 0.881 | 0.275 |
+| | F | 0.609 ± 0.015 | 0.565 | 0.861 | 0.269 |
+
+FF++ test AUC per method (FF++-only model): Deepfakes 0.929, Face2Face 0.880, FaceShifter 0.859, FaceSwap 0.847, NeuralTextures 0.750.
+
+**Calibration of the served model** (class-balanced ECE, lower is better):
 
 | | Validation | FF++ test | Celeb-DF v1 | Celeb-DF v2 | DFD |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Raw score | 0.092 | 0.159 | 0.106 | 0.109 | 0.127 |
 | Platt-calibrated | 0.044 (cross-fitted) | 0.138 | 0.141 | 0.126 | 0.097 |
 
-Calibration helps on validation, FF++ and DFD but not on Celeb-DF, so the shown probability is approximate. It does not fix the FF++ trade-off below: one threshold cannot serve both datasets better than 0.816 does on validation (the calibrated rule would lower FF++ validation specificity from 0.764 to 0.707).
+**ViT baseline** (`notebooks/DD_ViT_Final.ipynb`, random 80/20 split of frames, so inflated by leakage): best validation accuracy 88.13%, weighted precision / recall / F1 0.883.
 
-The second model's threshold (0.816) was chosen on FF++ val + Celeb-DF val. It ranks better everywhere, but at that threshold it trades FF++ specificity (0.807 to 0.693) for Celeb-DF specificity (0.554 to 0.825). Its Celeb-DF numbers are same-dataset results. Its unseen-dataset score comes from FaceForensics++'s DeepFakeDetection set (DFD: 28 paid actors in scripted scenes, never used for training, selection or thresholds): 0.814 AUC, against 0.648 ± 0.004 for C and 0.636 ± 0.021 for the full hybrid F. At its threshold it misses 35% of DFD's fakes, so on new footage a "real" verdict is weak evidence.
-
-**Final evaluation, FF++-only models** (`scripts/final_eval.py`; thresholds frozen from FF++ validation):
-
-| Data | Model | AUC | Balanced acc | Fake recall | Specificity |
-| --- | --- | ---: | ---: | ---: | ---: |
-| FF++ test (839 videos) | Fine-tuned ResNet50+ViT, per-frame aug. | **0.853** (95 % CI 0.823–0.886) | 0.795 | 0.783 | 0.807 |
-| | C: ResNet50+ViT, frozen features | 0.752 ± 0.004 | 0.672 | 0.729 | 0.614 |
-| | F: full hybrid, frozen features | 0.745 ± 0.009 | 0.676 | 0.732 | 0.619 |
-| Celeb-DF v1 (100) | Fine-tuned ResNet50+ViT, per-frame aug. | **0.837** (0.740–0.922) | 0.741 | 0.903 | 0.579 |
-| | C | 0.704 ± 0.027 | 0.572 | 0.968 | 0.175 |
-| | F | 0.658 ± 0.007 | 0.532 | 0.914 | 0.149 |
-| Celeb-DF v2 (516) | Fine-tuned ResNet50+ViT, per-frame aug. | **0.781** (0.738–0.821) | 0.718 | 0.882 | 0.554 |
-| | C | 0.627 ± 0.013 | 0.578 | 0.881 | 0.275 |
-| | F | 0.609 ± 0.015 | 0.565 | 0.861 | 0.269 |
-
-C and F: mean (± std for AUC) over 3 seeds. The final model is one training run (seed 0) on all 360 training
-families; its CI comes from resampling source families (FF++) or identities (Celeb-DF). FF++ test AUC per
-method for the final model: Deepfakes 0.929, Face2Face 0.880, FaceShifter 0.859, FaceSwap 0.847,
-NeuralTextures 0.750.
-
-**What the experiments showed** (validation split unless stated; details in `results/ffpp_c23/summary/`):
-
-* **Fine-tuning is the change that matters.** Unfreezing ResNet50 `layer4` and the last two ViT blocks raised
-  validation AUC from 0.670 to 0.774–0.796 on the same 120-family subset, and to 0.867 on all training data.
-  It holds on the test split (0.853 vs 0.752) and across datasets (Celeb-DF v2 0.781 vs 0.627).
-* **The original hybrid's extra parts add nothing on frozen features.** Mean-pooled ResNet50+ViT (row C, 0.73M
-  trainable parameters) matches or beats the full hybrid with FFT branch and BiLSTM (row F, 4.96M) on
-  validation (0.754 vs 0.745), on the test split and on Celeb-DF.
-* **The BiLSTM does not use frame order.** Shuffling frames at evaluation changes AUC by less than 0.001.
-  Window length 4, 8 or 16 makes no difference.
-* **Face cropping is worth about 0.17 AUC** (0.750 vs 0.577 on full frames).
-* **Unseen manipulation methods lose 0.07–0.14 AUC** (leave-one-method-out, frozen features).
-* **Raw probabilities are miscalibrated** (ECE 0.21–0.28); Platt scaling cross-fitted on validation brings ECE
-  to 0.01–0.03.
-* **Blur and downscaling break the frozen-feature models' threshold**: specificity drops from 0.69 to 0.17 at
-  mild blur. The fine-tuned model degrades less (validation AUC 0.867 clean, 0.812 blurred, 0.810 at half
-  resolution).
-* **Section 16.4 head changes did not help**: branch projections, a learned softmax gate (no better than its
-  fixed-weight ablation, and unstable across seeds), a causal LSTM (−0.006 AUC, half the parameters), and FFT
-  band variants were all within noise of their reference rows. EfficientNet-B0 beat ResNet50 as a single
-  encoder (+0.050 AUC) but not ResNet50+ViT.
-* **Sequence-consistent augmentation gave no advantage** over per-frame augmentation (validation AUC 0.781
-  vs 0.796, one seed each).
-* **Cross-dataset thresholds transfer badly.** On Celeb-DF the frozen-feature models call most real videos
-  fake (specificity 0.15–0.28); the fine-tuned model keeps 0.55–0.58. The FF++ threshold is not a reliable
-  operating point for new data.
-
-Compute (GPU, 32 frames): about 1 s per video end to end, dominated by video decoding and face detection;
-CPU about 6 s, dominated by the ViT.
-
-The hybrid notebook (`notebooks/`) is unchanged and still writes to
-`results/hybrid_cnn_vit_fft_bilstm/`; no result from it is recorded.
+**Compute** (GPU, one segment): about 1 s per video end to end, dominated by decoding and face detection; about 6 s on a CPU. Heatmaps add about 2 s per segment.
+</details>
 
 ---
 
-## Limitations
+## ⚙️ Configuration
 
-* **The local app serves the fine-tuned ResNet50 + ViT trained on FF++ + Celeb-DF v2, not the full hybrid.** The full hybrid (FFT branch + BiLSTM) scored no better than the simpler model on every test set, so it is not served. The served model needs a visible face. It scores every segment of a video, but its verdict uses the middle segment (choosing the mean or the maximum over segments did not help on validation); other segments above the threshold are shown as a warning, not as the verdict. On held-out test videos it still calls 21% of real Celeb-real interviews and 31% of real FF++ videos fake (the FF++-only model: 50% and 19%). On DFD, a dataset it never saw, it reaches 0.814 AUC but misses 35% of the fakes and calls 18% of the real videos fake; other sources may differ again. The Docker image and `space/` still serve the ViT baseline.
-* **Domain shift:** on 44 real and 44 fake DFDC videos (not part of training), the deployed ViT separates the classes only weakly (mean P(real) 0.67 on real vs 0.58 on fake videos). Treat predictions as an AI-assisted signal, not proof.
-* The ViT baseline numbers come from a frame-level split and may be inflated by leakage between frames of the same video.
-* No dataset, and no trained hybrid checkpoint, is shipped. The training notebooks cannot run until `data/FF_frames` exists.
-* `deepfake_detection_vit_best.ipynb` is an archived Colab experiment and does not run as-is.
-* The Flask development server (`python backend/app.py`) is for local use. Use gunicorn/Docker (Linux) for anything public.
-* Model performance also varies with resolution, compression, lighting, face quality and unseen manipulation methods.
-* Research pipeline: each fine-tuned model is a single training run (one seed); its test numbers carry the bootstrap CIs shown, not seed variance. The checkpoints under `results/ffpp_c23/` are local only (git-ignored). Celeb-DF v1 has only 100 test videos, so its CI is wide.
+All settings are optional; both `backend/app.py` and `streamlit_app.py` read `<repo>/.env` (see `.env.example`), and real environment variables win.
+
+| Variable | Default | Used by |
+| --- | --- | --- |
+| `SERVE_MODEL` | `finetuned` (`vit` in the Docker image) | backend: which model `/predict` serves |
+| `FINETUNED_CHECKPOINT` | `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/seed0/checkpoints/best_trainable.pth` | backend (`finetuned`) |
+| `MODEL_PATH` | `backend/models/best_vit_model.pth` | backend (`vit`) |
+| `MODEL_URL`, `MODEL_SHA256` | unset | backend: download the ViT checkpoint if missing |
+| `CLASS_NAMES` | `fake,real` | backend: output index → label |
+| `HOST` / `PORT` | `127.0.0.1` / `5000` | backend |
+| `MAX_CONTENT_LENGTH_MB` | `100` | backend upload limit |
+| `CORS_ALLOWED_ORIGINS` | all | backend |
+| `DEEPSHIELD_BACKEND_URL` | `http://127.0.0.1:5000` | console |
+| `DEEPSHIELD_FFPP_DIR`, `DEEPSHIELD_CELEBDF_V1_DIR`, `DEEPSHIELD_CELEBDF_V2_DIR` | `<repo>/data/...` | research scripts |
+| `DEEPSHIELD_DATA_DIR` | `<repo>/data` | notebooks and derived data |
+
+<details>
+<summary><b>🔌 API reference</b></summary>
+
+* `GET /health` → `{status, serve_model, threshold, calibrated, device, model_loaded, model_error, model_arch, model_path, class_names, max_upload_mb, model_url_set}`
+* `POST /predict` (multipart field `file`) → Server-Sent Events, one JSON object per `data:` line. Errors arrive as `{"error": ...}`, with `"kind": "no_face"` when no face was found.
+  * `SERVE_MODEL=finetuned`: `{"stage": "plan", "segments", "video_seconds"}`, one `{"stage": "segment", "done", "of", "score"}` per segment, then `{"stage": "done", "model_kind": "finetuned", "rule", "score", "threshold", "p_calibrated", "label", "segments", "middle", "decider", "segments_scored", "window_probs", "windows_fake", "mode", "evaluated", "frames_analyzed", "face_rate", "segment_seconds", "video_seconds", "thumbs", "explain_id"}`. `segments` lists `start_s`, `end_s`, `score` (`null` without a face) and `face_rate`; `window_probs`, `thumbs` and `segment_seconds` belong to the segment that decided the verdict.
+  * `SERVE_MODEL=vit`: `{total_frames, real_count, fake_count, real_percentage, fake_percentage}` after every sampled frame (~2 per second).
+* `POST /explain` (JSON `{"id": explain_id}`, `finetuned` only) → `{verdict, segment_score, frames: [{overlay, image, heat_mean, heat_max}]}`; per-frame Grad-CAM overlays as JPEG data URLs. HTTP 404 once the analysis has expired (the last 16 are kept, per backend process).
+
+```bash
+curl http://127.0.0.1:5000/health
+curl -N -F "file=@path/to/video.mp4" http://127.0.0.1:5000/predict
+```
+</details>
+
+<details>
+<summary><b>💾 Model weights and outputs</b></summary>
+
+| File | Model | Used by |
+| --- | --- | --- |
+| `results/ffpp_c23/e2e_finetune_aug-frame_ffpp+celebdf/seed0/checkpoints/best_trainable.pth` | fine-tuned layers of ResNet50 + ViT and the head (the rest comes from `timm` pretrained weights) | backend (`finetuned`) |
+| `…/calibration.json`, `…/aggregation.json` | calibration map and segment rule | backend |
+| `backend/models/best_vit_model.pth` | `timm` `vit_base_patch16_224`, 2 classes | backend (`vit`), Docker |
+
+Weights are git-ignored. The ViT checkpoint is also published at https://huggingface.co/RohRoos84/deepshield-model; set `MODEL_URL` (and optionally `MODEL_SHA256`) to download it on startup. **Class order everywhere: index 0 = fake, 1 = real**; checkpoints carry their `class_names`, and loading refuses a different order.
+
+The backend saves nothing: an upload lives in the OS temp folder only while its request runs. Research outputs go to `results/` (git-ignored), notebooks write to `results/<experiment>/`.
+
+**Docker** (`Dockerfile`, port 7860) and `space/` copy only `backend/`, so they serve the ViT baseline (`SERVE_MODEL=vit`).
+</details>
+
+<details>
+<summary><b>📓 Notebooks</b></summary>
+
+Open them with the project `.venv` as kernel. Each starts with a *Project paths* cell that finds the repository root.
+
+| Notebook | Purpose |
+| --- | --- |
+| `frac_df_cnnvit_fft_temporal.ipynb` | Hybrid research model: 8-frame sequences → ResNet50 + ViT + FFT → BiLSTM |
+| `DD_ViT_Final.ipynb` | ViT baseline (frame-level split; source of `best_vit_model.pth`) |
+| `deepfake_cnn_vit.ipynb` | Frame extraction + ResNet50/ViT fusion |
+| `frac_df_cnnvit.ipynb` | Frozen ResNet50/ViT fusion on 30% of frames |
+| `deepfake_detection_vit_best.ipynb` | Archived Colab experiment, not runnable as-is |
+
+The notebooks read frames from `data/FF_frames/{fake,real}/<video_id>_<frame>.jpg` (index 0 = fake, 1 = real). On Windows, set `num_workers=0` in `DataLoader` calls if training hangs.
+</details>
 
 ---
 
-## License
+## ⚠️ Limitations
 
-This project is intended for educational, research and experimental purposes.
+* 🆕 **New generators.** All training fakes come from 2019–2020 face swaps and reenactments. Diffusion-based swaps, lip-sync models and fully generated video are unseen methods; expect lower accuracy.
+* 🎯 **"Real" is weak evidence on new footage.** On DFD the served model misses 35% of fakes at its threshold and flags 18% of real videos. Treat a verdict as a signal, not proof.
+* ⚖️ **One threshold, several domains.** 0.816 was chosen on FF++ + Celeb-DF validation data; a new source shifts the balance between missed fakes and false alarms.
+* 🙂 **Faces only.** One tracked face (the largest) is judged; videos without a visible face are refused; audio is not analysed. Stills were never evaluated.
+* 🎞️ **Verdict from one segment.** The whole video is scored and shown, but the verdict uses the middle segment; flagged segments elsewhere are warnings.
+* 🔥 **Heatmaps of "fake" verdicts are only a hint** (65% in the deletion test).
+* 🎲 **Single training runs.** Each fine-tuned model is one seed; its numbers carry bootstrap CIs, not seed variance.
+* 🖥️ **Deployment.** The Flask dev server is for local use; Docker and `space/` still serve the ViT baseline; heatmaps need the single-process server.
+* 📓 The ViT baseline's 88% comes from a frame-level split and is inflated by leakage. `deepfake_detection_vit_best.ipynb` does not run as-is.
+
+---
+
+## 📄 License
+
+This project is intended for educational, research and experimental purposes. FaceForensics++, Celeb-DF and DeepFakeDetection are used under their own research licences and are not redistributed; faces in the screenshots are blurred.
 
 Shubham Kumar
